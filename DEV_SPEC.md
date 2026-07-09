@@ -2060,6 +2060,13 @@ dashboard:
 | I4 | 清理接口一致性（契约测试补齐） | [x] | 2026-02-24 | VectorStore+Reranker+Evaluator边界测试+83测试全绿 |
 | I5 | 全链路 E2E 验收 | [x] | 2026-02-24 | 1198单元+30e2e通过,ingest/query/evaluate脚本验证 |
 
+#### 阶段 J：多格式文档加载扩展（Loader 可插拔 + DOCX）
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| J1 | LoaderFactory + Pipeline Loader 配置化（前置基建） | [x] | 2026-07-09 | LoaderFactory+LoaderSettings，pipeline 配置化，17 单元测试+配置/PDF 回归通过 |
+| J2 | WordLoader（DOCX）实现 | [ ] | | MarkItDown 文本提取 + docx 图片提取 + 占位符，接入 LoaderFactory |
+
 ---
 
 ### 📈 总体进度
@@ -2075,7 +2082,8 @@ dashboard:
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| **总计** | **68** | **68** | **100%** |
+| 阶段 J | 2 | 1 | 50% |
+| **总计** | **70** | **69** | **99%** |
 
 
 ---
@@ -3154,6 +3162,64 @@ dashboard:
   - Dashboard 可展示摄取与查询追踪
   - `python scripts/evaluate.py` 输出评估指标
 - **测试方法**：手动全链路走通 + `pytest -q` 全量测试。
+
+## 阶段 J：多格式文档加载扩展（目标：Loader 可插拔 + 支持 DOCX）
+
+> **背景**：当前 Loader 层尚未 Factory 化——`pipeline.py` 硬编码 `PdfLoader`，`settings.yaml` 也无 loader 配置项，与项目「Factory + Registry + config-only 切换」原则（§5.6）不一致。本阶段先把 Loader 可插拔化（J1），再落地 WordLoader（J2），为 §7.2 所述的 PPTX/XLSX/HTML 扩展铺路。
+
+### J1：LoaderFactory + Pipeline Loader 配置化（前置基建）
+- **目标**：补齐 Loader 的 Factory + Registry 机制，让 `IngestionPipeline` 通过 `settings.yaml` 选择 loader，达成「新增 Loader = 实现 `BaseLoader` + 注册 + 改配置」的零代码切换。
+- **修改文件**：
+  - `src/libs/loader/loader_factory.py`（新增）
+  - `src/libs/loader/__init__.py`（导出 `LoaderFactory`）
+  - `src/ingestion/pipeline.py`（去掉硬编码 `PdfLoader`，改用 `LoaderFactory.create(...)`）
+  - `config/settings.yaml`（`ingestion` 段新增 `loader:` 配置块）
+  - `tests/unit/test_loader_factory.py`（新增）
+- **实现类/函数**：
+  - `LoaderFactory`：`_PROVIDERS` 注册表 + `register_provider(name, cls)` + `create(settings, collection) -> BaseLoader`
+  - 在 init block 注册 `pdf → PdfLoader`
+  - pipeline：`self.loader = LoaderFactory.create(settings, collection)`
+- **验收标准**：
+  - **回归不破坏**：`ingestion.loader.provider: "pdf"` 时，pipeline 行为与当前硬编码 `PdfLoader` 完全一致
+  - **配置驱动**：切换 loader provider 只改 `settings.yaml`，不改 pipeline 代码
+  - **错误处理**：未知 provider 抛明确异常（`SettingsError`/`ValueError`）
+  - **单测覆盖**：注册 / 创建 / 未知 provider / 重复注册 等边界
+- **测试方法**：`pytest -q tests/unit/test_loader_factory.py` + 回归 `pytest -q tests/unit/test_loader_pdf_contract.py tests/integration/test_pdf_loader_integration.py`。
+
+### J2：WordLoader（DOCX）实现
+- **目标**：实现 `WordLoader`，把 `.docx` 解析为统一 `Document`（Markdown 文本 + 图片提取 + `[IMAGE: id]` 占位符），复用 C1 图片契约与 C4 占位符分发链路。
+- **前置条件**：J1 完成（`LoaderFactory` 就绪，`WordLoader` 通过「注册 + 配置」接入 pipeline）。
+- **修改文件**：
+  - `src/libs/loader/word_loader.py`（新增）
+  - `src/libs/loader/__init__.py`（导出 `WordLoader`）
+  - `src/libs/loader/loader_factory.py`（J1 产出，注册 `docx → WordLoader`）
+  - `config/settings.yaml`（示例值：`ingestion.loader.provider: "docx"`）
+  - `pyproject.toml`（按需补 `python-docx` 依赖用于图片定位；文本提取复用 MarkItDown）
+  - `tests/unit/test_loader_word_contract.py`（新增）
+  - `tests/integration/test_word_loader_integration.py`（新增）
+  - `tests/fixtures/sample_documents/`（新增 `simple.docx`、`with_images.docx`）
+- **实现类/函数**：
+  - `WordLoader(BaseLoader)`：`__init__(extract_images=True, image_storage_dir=...)`、`load(file_path) -> Document`
+  - **文本提取**：MarkItDown `convert()` → Markdown（与 `PdfLoader` 一致，复用 `MARKITDOWN_AVAILABLE` 降级模式）
+  - **图片提取**：DOCX 本质是 zip，解压取 `word/media/*`；用 `python-docx` 建立图片与段落的位置关系，在文本中插入 `[IMAGE: {image_id}]` 占位符
+  - **辅助方法复用**：`_compute_file_hash` / `_extract_title` / `_generate_image_id` 与 `PdfLoader` 同构——建议抽到 `BaseLoader`（或共享 mixin），避免复制粘贴
+  - `doc_type="docx"`；`metadata` 含 `source_path`/`doc_hash`/`title?`/`images?`
+- **验收标准**：
+  - **基础要求**：对 `simple.docx` 产出 `Document`，metadata 含 `source_path`、`doc_type="docx"`、`doc_hash`，文本非空且为 Markdown
+  - **扩展名校验**：非 `.docx`/`.doc` 文件抛 `ValueError`
+  - **图片处理**（遵循 C1 契约）：`with_images.docx` 提取图片到 `data/images/{doc_hash}/`，文本含 `[IMAGE: {id}]` 占位符，`metadata.images` 字段完整（`id`/`path`/`page`/`text_offset`/`text_length`/`position`）
+  - **占位符链路（端到端）**：下游 C4 `DocumentChunker` 能把 `[IMAGE: id]` 正确分发到对应 chunk 的 `metadata.image_refs`（C7 ImageCaptioner 依赖此链路定位图片）
+  - **降级行为**：图片提取失败不阻塞文本解析（日志告警 + 纯文本继续）；MarkItDown 不可用时抛明确 `ImportError`
+  - **幂等性**：同一文件两次 `load` 产出相同 `doc_hash`/`id`
+  - **配置驱动**：`ingestion.loader.provider: "docx"` 时 pipeline 使用 `WordLoader`，无需改 pipeline 代码
+- **测试方法**：
+  - `pytest -q tests/unit/test_loader_word_contract.py`
+  - `pytest -q tests/integration/test_word_loader_integration.py`
+- **测试建议**：
+  - 准备 `simple.docx`（纯文本，含一级标题）与 `with_images.docx`（含 ≥1 张内嵌图片）
+  - 契约测试类结构对齐 `test_loader_pdf_contract.py`：`TestBaseLoader` / `TestWordLoaderInitialization` / `TestWordLoaderValidation` / `TestWordLoaderHelperMethods` / `TestDocxConversionCore`
+  - 集成测试：真实 `.docx` 端到端 `load`，断言 Document 字段 + 图片落盘 + 占位符存在
+  - fixture 缺失时 `pytest.skip`，与 PDF 测试一致
 
 ---
 

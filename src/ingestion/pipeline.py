@@ -27,7 +27,7 @@ from src.observability.logger import get_logger
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
-from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.loader_factory import LoaderFactory
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
@@ -141,12 +141,14 @@ class IngestionPipeline:
         self.integrity_checker = SQLiteIntegrityChecker(db_path=str(resolve_path("data/db/ingestion_history.db")))
         logger.info("  ✓ FileIntegrityChecker initialized")
         
-        # Stage 2: Loader
-        self.loader = PdfLoader(
-            extract_images=True,
-            image_storage_dir=str(resolve_path(f"data/images/{collection}"))
+        # Stage 2: Loader (J1: pluggable via LoaderFactory; provider from settings.yaml)
+        self.loader = LoaderFactory.create(settings, collection)
+        _loader_provider = (
+            settings.ingestion.loader.provider
+            if settings.ingestion and settings.ingestion.loader
+            else "pdf"
         )
-        logger.info("  ✓ PdfLoader initialized")
+        logger.info(f"  ✓ Loader initialized (provider: {_loader_provider})")
         
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)

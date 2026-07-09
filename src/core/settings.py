@@ -168,6 +168,17 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
+class LoaderSettings:
+    """Pluggable document loader configuration (J1).
+
+    Backwards-compatible: when ``ingestion.loader`` is absent the pipeline
+    defaults to the ``pdf`` provider with image extraction enabled.
+    """
+    provider: str
+    extract_images: bool = True
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     chunk_size: int
     chunk_overlap: int
@@ -175,6 +186,7 @@ class IngestionSettings:
     batch_size: int
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
+    loader: Optional[LoaderSettings] = None  # J1: 可插拔 Loader 配置（缺省默认 pdf）
 
 
 @dataclass(frozen=True)
@@ -205,6 +217,18 @@ class Settings:
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
+            # J1: pluggable loader config (optional; defaults to pdf provider)
+            loader_settings = None
+            if "loader" in ingestion:
+                loader_cfg = _require_mapping(ingestion, "loader", "ingestion")
+                loader_settings = LoaderSettings(
+                    provider=_require_str(loader_cfg, "provider", "ingestion.loader"),
+                    extract_images=(
+                        _require_bool(loader_cfg, "extract_images", "ingestion.loader")
+                        if "extract_images" in loader_cfg else True
+                    ),
+                )
+
             ingestion_settings = IngestionSettings(
                 chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
                 chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
@@ -212,6 +236,7 @@ class Settings:
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
+                loader=loader_settings,
             )
 
         vision_llm_settings = None
