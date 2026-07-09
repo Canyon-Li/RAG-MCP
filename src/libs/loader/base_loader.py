@@ -13,6 +13,7 @@ Design Principles:
 
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -79,3 +80,38 @@ class BaseLoader(ABC):
         if not path.is_file():
             raise ValueError(f"Path is not a file: {path}")
         return path
+
+    # ------------------------------------------------------------------
+    # Shared helpers (J2: added here so new loaders — Word/... — reuse them
+    # instead of copy-pasting. PdfLoader keeps its own identical defs for now;
+    # new loaders inherit these.)
+    # ------------------------------------------------------------------
+
+    def _compute_file_hash(self, file_path: str | Path) -> str:
+        """Compute SHA256 hash of file content (64-char hex string).
+
+        Used for a stable doc_id and the per-document image directory.
+        """
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256.update(chunk)
+        return sha256.hexdigest()
+
+    def _extract_title(self, text: str) -> Optional[str]:
+        """Extract a title from the first Markdown H1, else the first non-empty line."""
+        lines = text.split("\n")
+        for line in lines[:20]:
+            line = line.strip()
+            if line.startswith("# "):
+                return line[2:].strip()
+        for line in lines[:10]:
+            line = line.strip()
+            if line:
+                return line
+        return None
+
+    @staticmethod
+    def _generate_image_id(doc_hash: str, page: int, sequence: int) -> str:
+        """Generate a deterministic image id: ``{doc_hash[:8]}_{page}_{sequence}``."""
+        return f"{doc_hash[:8]}_{page}_{sequence}"

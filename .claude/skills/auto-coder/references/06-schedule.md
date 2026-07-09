@@ -155,7 +155,7 @@
 | 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
 |---------|---------|------|---------|------|
 | J1 | LoaderFactory + Pipeline Loader 配置化（前置基建） | [x] | 2026-07-09 | LoaderFactory+LoaderSettings，pipeline 配置化，17 单元测试+配置/PDF 回归通过 |
-| J2 | WordLoader（DOCX）实现 | [ ] | | MarkItDown 文本提取 + docx 图片提取 + 占位符，接入 LoaderFactory |
+| J2 | WordLoader（DOCX）实现 | [x] | 2026-07-09 | WordLoader(markitdown+python-docx回退+zipfile图片)，docx注册，18契约+10集成测试通过 |
 
 ---
 
@@ -172,8 +172,8 @@
 | 阶段 G | 6 | 6 | 100% |
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
-| 阶段 J | 2 | 1 | 50% |
-| **总计** | **70** | **69** | **99%** |
+| 阶段 J | 2 | 2 | 100% |
+| **总计** | **70** | **70** | **100%** |
 
 
 ---

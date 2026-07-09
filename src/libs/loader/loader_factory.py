@@ -141,6 +141,13 @@ def _register_builtin_providers() -> None:
     except ImportError:
         pass  # PdfLoader (or its deps) not available
 
+    try:
+        from src.libs.loader.word_loader import WordLoader
+
+        LoaderFactory.register_provider("docx", WordLoader)
+    except ImportError:
+        pass  # WordLoader (or its deps) not available
+
 
 # Register providers when module is imported
 _register_builtin_providers()
