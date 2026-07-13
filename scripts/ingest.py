@@ -47,6 +47,7 @@ sys.path.insert(0, str(project_root))
 from src.core.settings import load_settings, Settings
 from src.core.trace import TraceContext, TraceCollector
 from src.ingestion.pipeline import IngestionPipeline, PipelineResult
+from src.libs.loader.loader_factory import LoaderFactory
 from src.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -209,9 +210,16 @@ def main() -> int:
         print(f"[FAIL] Failed to load configuration: {e}")
         return 2
     
-    # Discover files
+    # Discover files — extensions driven by the configured loader provider
+    # (pdf -> .pdf, docx -> .docx) so CLI file discovery matches LoaderFactory.
     try:
-        files = discover_files(args.path)
+        loader_provider = (
+            settings.ingestion.loader.provider
+            if settings.ingestion and settings.ingestion.loader
+            else "pdf"
+        )
+        extensions = LoaderFactory.get_supported_extensions(loader_provider)
+        files = discover_files(args.path, extensions=extensions)
         print(f"[INFO] Found {len(files)} file(s) to process")
         
         if len(files) == 0:

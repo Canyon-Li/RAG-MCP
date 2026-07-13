@@ -130,6 +130,29 @@ class LoaderFactory:
         """
         return sorted(cls._PROVIDERS.keys())
 
+    # Provider -> file extensions it accepts. Kept in sync with the providers
+    # registered in _register_builtin_providers.
+    _PROVIDER_EXTENSIONS: dict[str, list[str]] = {
+        "pdf": [".pdf"],
+        "docx": [".docx"],
+    }
+
+    @classmethod
+    def get_supported_extensions(cls, provider: str) -> list[str]:
+        """Return the file extensions a loader provider accepts.
+
+        Used by the CLI (ingest.py) so file discovery matches the configured
+        loader — e.g. provider=docx discovers .docx, not .pdf.
+
+        Args:
+            provider: Provider name (e.g. 'pdf', 'docx').
+
+        Returns:
+            List of lowercase dot-prefixed extensions. Defaults to ``['.pdf']``
+            for unknown providers.
+        """
+        return cls._PROVIDER_EXTENSIONS.get(provider.lower(), [".pdf"])
+
 
 # Auto-register providers on module import
 def _register_builtin_providers() -> None:

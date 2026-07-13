@@ -25,6 +25,7 @@
 - [M. 配置变更与容错](#m-配置变更与容错)
 - [N. 数据生命周期闭环](#n-数据生命周期闭环)
 - [O. 文档替换与多场景验证](#o-文档替换与多场景验证)
+- [P. DOCX 摄取（J2 WordLoader）](#p-docx-摄取j2-wordloader)
 
 ---
 
@@ -42,6 +43,7 @@
 | `InvalidKey` | Baseline + LLM API Key 无效 | `qa_config.py apply invalid_llm_key` |
 | `InvalidEmbedKey` | Baseline + Embedding API Key 无效 | `qa_config.py apply invalid_embed_key` |
 | `Any` | 任意状态均可 | 无需切换 |
+| `DocxLoader` | Baseline + `ingestion.loader.provider` 切为 `"docx"`（用 WordLoader 摄取 .docx） | 手动编辑 `settings.yaml`；测后改回 `"pdf"` |
 
 > 所有 config 类状态（DeepSeek/Rerank_LLM 等）测完后执行 `qa_config.py restore` 回到 Baseline。
 
@@ -314,6 +316,25 @@
 | O-07 | 替换文档后重新评估 | Baseline | 1. Dashboard Clear All Data<br>2. 执行 `python scripts/ingest.py --path tests/fixtures/sample_documents/complex_technical_doc.pdf` → 运行 `python scripts/evaluate.py` → 记录分数<br>3. Dashboard Clear All Data<br>4. 执行 `python scripts/ingest.py --path tests/fixtures/sample_documents/chinese_technical_doc.pdf` → 运行 `python scripts/evaluate.py` → 记录分数 | complex_technical_doc.pdf 的评估分数应较高（英文内容与 golden_test_set 匹配度高）；chinese_technical_doc.pdf 的分数应较低（中文内容与英文 golden_test_set 匹配度低） |
 | O-08 | 扫描目录批量摄取多份 PDF | Baseline | 1. `python scripts/ingest.py --path tests/fixtures/sample_documents/` | 所有 PDF 依次被处理，终端输出处理汇总（成功数/总数），Dashboard 可看到所有文档 |
 | O-09 | 博客/非技术类短文档 | Baseline | 1. 摄取 `blogger_intro.pdf`（博主自我介绍类短文档）<br>2. 用文档内容关键词查询（如"博客"、"自我介绍"） | 短文档正确分块（Chunk 数量较少），查询可命中相关内容，验证非技术类文档的摄取兼容性 |
+
+---
+
+## P. DOCX 摄取（J2 WordLoader）
+
+> **背景**：J2 新增 `WordLoader`，通过 `LoaderFactory` 注册为 `docx` provider。
+> **关键限制**：LoaderFactory 按 `settings.yaml` 的**全局 `ingestion.loader.provider`** 路由，**不按文件扩展名自动路由**——测 DOCX 前须把 provider 切为 `"docx"`，且此时无法摄取 .pdf。P 章节测完务必把 provider 改回 `"pdf"`（见 P-06）。
+> **Fixture**：`tests/fixtures/sample_documents/simple.docx`、`with_images.docx`（用 python-docx 生成）。
+> **依赖**：`python-docx`（已加入 pyproject dependencies）。
+> **文本提取**：env 缺 `markitdown[docx]`（mammoth），WordLoader 自动回退到 python-docx 提取（日志可见 fallback warning）。
+
+| ID | 测试标题 | 状态 | 操作步骤 | 预期现象 |
+|----|---------|------|---------|--------- |
+| P-01 | 摄取单个 DOCX 文件 | DocxLoader | 1. `settings.yaml`: `ingestion.loader.provider: "docx"`<br>2. `python scripts/ingest.py --path tests/fixtures/sample_documents/simple.docx --collection docx_test --force` | 各阶段正常推进（load 阶段用 WordLoader），exit code=0，输出 Success，chunk 数 > 0 |
+| P-02 | 摄取含图片 DOCX 并验证图片提取 | DocxLoader | 1. provider=`"docx"`<br>2. `python scripts/ingest.py --path tests/fixtures/sample_documents/with_images.docx --collection docx_test --force --verbose` | exit=0；日志显示提取 ≥1 张图片；`data/images/docx_test/` 下有图片文件；chunk 文本含 `[IMAGE: ...]` 占位符 |
+| P-03 | DOCX 幂等性（重复摄取跳过） | DocxLoader | 1. provider=`"docx"`<br>2. 再次 `python scripts/ingest.py --path tests/fixtures/sample_documents/simple.docx --collection docx_test`（无 --force） | exit=0；提示 Skipped (already processed)；不产生重复 chunk |
+| P-04 | DOCX 摄取后可被查询检索 | DocxLoader | 1. provider=`"docx"`（P-01 摄取已完成）<br>2. `python scripts/query.py --query "Simple Document" --collection docx_test --verbose` | exit=0；返回结果，source_file 含 `simple.docx`，score > 0 |
+| P-05 | provider=pdf 时摄取 .docx 报错 | Baseline | 1. `settings.yaml`: `ingestion.loader.provider: "pdf"`<br>2. `python scripts/ingest.py --path tests/fixtures/sample_documents/simple.docx --collection docx_test --force` | exit≠0；错误信息含 "Unsupported file type: .docx"（ingest.py 文件发现层按 provider 拒绝，到不了 PdfLoader）；不产生 chunk |
+| P-06 | 恢复 provider=pdf 后 PDF 摄取正常 | Baseline | 1. `settings.yaml`: `ingestion.loader.provider: "pdf"`<br>2. `python scripts/ingest.py --path tests/fixtures/sample_documents/simple.pdf --collection default --force` | exit=0；PdfLoader 正常摄取，验证 provider 切换不影响 PDF 路径 |
 
 ---
 

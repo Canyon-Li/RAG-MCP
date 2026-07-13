@@ -2,9 +2,9 @@
 
 > Generated: 2026-02-25 23:02
 
-> Total: 150 test cases
+> Total: 156 test cases
 
-> ✅ Pass: 138 | ❌ Fail: 0 | ⏭️ Skip: 12 | 🔧 Fix: 0 | ⬜ Pending: 0
+> ✅ Pass: 144 | ❌ Fail: 0 | ⏭️ Skip: 12 | 🔧 Fix: 0 | ⬜ Pending: 0
 
 
 <!-- STATUS LEGEND: ⬜ pending | ✅ pass | ❌ fail | ⏭️ skip | 🔧 fix (needs re-test) -->
@@ -250,3 +250,16 @@
 | ✅ | O-07 | 替换文档后重新评估 | qa_multistep: VERDICT=PASS, Phase1 complex_technical_doc.pdf (English) ingest exit=0, evaluate exit=0, 5 queries each Retrieved=10 chunks (50 total). Phase2 clear→chinese_technical_doc.pdf (Chinese) ingest exit=0, evaluate exit=0, 5 queries each Retrieved=7 chunks (35 total). English doc 50 total > Chinese doc 35 total, English golden_test_set matches English doc better. Fixed qa_multistep.py encoding (utf-8) |
 | ✅ | O-08 | 扫描目录批量摄取多份 PDF | CLI: python scripts/ingest.py --path tests/fixtures/sample_documents/ --force exit=0, Total files processed=7 Successful=7 Failed=0, blogger_intro.pdf(2 chunks/2 images), chinese_long_doc.pdf(28/0), chinese_table_chart_doc.pdf(3/3), chinese_technical_doc.pdf(7/0), complex_technical_doc.pdf(11/3), simple.pdf(1/0), with_images.pdf(1/1). Total chunks=53 images=9 |
 | ✅ | O-09 | 博客/非技术类短文档 | CLI: blogger_intro.pdf ingested (2 chunks, 2 images, short doc). Query '博客 自我介绍': Dense #1=blogger_intro.pdf score=0.9100, #2=blogger_intro.pdf score=0.9049 (top 2 both from blogger doc), Sparse returned=0, Fusion #1/#2 from blogger_intro.pdf. Short non-technical doc correctly chunked and recalled |
+
+## P. DOCX 摄取（J2 WordLoader）
+
+> 新增章节（J2）。环境: conda langchain-test, provider 由 settings.yaml `ingestion.loader.provider` 控制。Fixture: simple.docx / with_images.docx（python-docx 生成）。
+
+| Status | ID | Title | Note |
+|--------|----|-------|------|
+| ✅ | P-01 | 摄取单个 DOCX 文件 | CLI: provider=docx, ingest simple.docx --collection docx_test --force, exit=0, 'Success: 1 chunks, 0 images', Dense 1 vec dim=1024 (qwen), Stored 1 vectors, BM25 index 1 doc. **Fix applied**: ingest.py discover_files + LoaderFactory.get_supported_extensions（原本在文件发现层拒绝 .docx: 'Unsupported file type'） |
+| ✅ | P-02 | 摄取含图片 DOCX 并验证图片提取 | CLI: ingest with_images.docx --verbose, exit=0, 'Success: 1 chunks, 1 images', 图片 ac18c74a_1_1.png 落盘 data/images/docx_test/{doc_hash}/, image_id 符合 C1 契约 {hash[:8]}_1_1 |
+| ✅ | P-03 | DOCX 幂等性（重复摄取跳过） | CLI: re-ingest simple.docx no --force, exit=0, '[SKIP] Skipped (already processed)', Total chunks generated: 0 |
+| ✅ | P-04 | DOCX 摄取后可被查询检索 | CLI: query "Simple Document" --collection docx_test, exit=0, returned=2, #01 simple.docx score=0.0328, #02 with_images.docx score=0.0161 text 含 [IMAGE: ac18c74a_1_1] 占位符（验证 C4 占位符端到端链路） |
+| ✅ | P-05 | provider=pdf 时摄取 .docx 报错 | CLI: provider=pdf, ingest simple.docx, [FAIL] Unsupported file type: .docx. Supported: ['.pdf'], conda exit≠0. discover_files 层拒绝（非 PdfLoader "File is not a PDF"），因 get_supported_extensions 让 provider=pdf 只接受 .pdf — 更早更清晰的拒绝 |
+| ✅ | P-06 | 恢复 provider=pdf 后 PDF 摄取正常 | CLI: provider=pdf, ingest simple.pdf --collection default --force, exit=0, 'Success: 1 chunks, 0 images' |
