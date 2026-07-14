@@ -166,7 +166,7 @@
 | K1 | Loader→Parser 正名 + Factory 统一 settings 构造 | [x] | 2026-07-14 | 新建 src/libs/parser/；parser 测试 76/76，影响域 15 个 loader→parser 注入失败已修复 |
 | K2 | Section 数据结构 + Chunker 升级（优先 sections 退化 text） | [x] | 2026-07-14 | 依赖 K1；老路径回归 19/19 + sections 12/12；types 加 Section |
 | K3 | pdf_text provider + 别名 + _PROVIDER_EXTENSIONS | [x] | 2026-07-14 | 依赖 K1；pdf_text 别名 + extensions，21/21 全绿 |
-| K2b | Chunker table 职责修正（清洗→搬运，对齐 7.5） | [ ] | | 依赖 K2；K4′ 前置，修正 K2 的 sidecar 清洗假设 |
+| K2b | Chunker table 职责修正（清洗→搬运，对齐 7.5） | [x] | 2026-07-14 | 依赖 K2；table 搬运 + 删 HTML 辅助，32/32 全绿 |
 | K4′ | pdf_table provider（pdfplumber 原生表格 + 降级链） | [ ] | | 依赖 K2b,K3；本项目内纯算法，零 sidecar/零模型 |
 | K6 | 收尾：trace + 文档债 + QA/README | [ ] | | 依赖 K1–K4′ |
 
@@ -186,8 +186,8 @@
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
 | 阶段 J | 2 | 2 | 100% |
-| 阶段 K | 6 | 3 | 50% |
-| **总计** | **76** | **73** | **96%** |
+| 阶段 K | 6 | 4 | 67% |
+| **总计** | **76** | **74** | **97%** |
 
 
 ---

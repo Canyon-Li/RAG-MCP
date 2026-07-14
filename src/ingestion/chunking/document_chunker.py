@@ -293,16 +293,18 @@ class DocumentChunker:
         ]
 
     def _split_table_segment(self, seg: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Split a table segment: whole if ≤ 2×chunk_size, else row boundaries.
+        """Split a table segment: whole if ≤ 2×chunk_size, else plain-text rows.
 
-        chunk.text = cleaned plain text; metadata.table_html = original HTML
-        (only on the first chunk when split — §17.2).
+        K2b (§7.5/§14.1): the Chunker only *carries* the Parser's already-cleaned
+        plain text (``seg["text"]``) — it does **not** re-clean HTML. Oversized
+        tables split at plain-text row boundaries (``\\n``); ``table_html`` is
+        attached only to the first chunk (§17.2).
         """
-        html = seg.get("table_html") or seg["text"]
-        plain = self._html_table_to_text(html)
+        plain = seg["text"]  # Parser-supplied cleaned text (e.g. "列名: 值" rows)
+        html = seg.get("table_html")
         bbox = seg.get("bbox")
 
-        if not plain.strip():
+        if not plain or not plain.strip():
             return []
 
         # Whole table fits → keep whole.
@@ -314,14 +316,15 @@ class DocumentChunker:
                 "bbox": bbox,
             }]
 
-        # Oversized → split at row boundaries; table_html only on first chunk.
-        row_plains = self._split_html_table_rows(html, self._chunk_size) or [plain]
+        # Oversized → split the plain text at \n row boundaries;
+        # table_html only on the first chunk.
+        row_chunks = self._split_plain_rows(plain, self._chunk_size) or [plain]
         results: List[Dict[str, Any]] = []
-        for i, chunk_plain in enumerate(row_plains):
-            if not chunk_plain.strip():
+        for i, chunk_text in enumerate(row_chunks):
+            if not chunk_text.strip():
                 continue
             results.append({
-                "text": chunk_plain,
+                "text": chunk_text,
                 "section_type": "table",
                 "table_html": html if i == 0 else None,
                 "bbox": bbox,
@@ -332,6 +335,28 @@ class DocumentChunker:
             "table_html": html,
             "bbox": bbox,
         }]
+
+    def _split_plain_rows(self, text: str, max_size: int) -> List[str]:
+        """Split plain text at ``\\n`` row boundaries, each piece ≈ ≤ max_size.
+
+        Used for oversized tables (K2b): rows are already separated by ``\\n``
+        in the Parser's cleaned text, so we pack them greedily up to max_size.
+        """
+        lines = text.split("\n")
+        chunks: List[str] = []
+        current: List[str] = []
+        current_len = 0
+        for line in lines:
+            line_len = len(line) + 1  # +1 for the newline join
+            if current and current_len + line_len > max_size:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            current.append(line)
+            current_len += line_len
+        if current:
+            chunks.append("\n".join(current))
+        return chunks
 
     def _split_list_segment(self, seg: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Split a list segment: whole if ≤ chunk_size, else item boundaries."""
@@ -353,48 +378,12 @@ class DocumentChunker:
             if c.strip()
         ]
 
-    # --- HTML / list helpers (compiled patterns at class level) ---
+    # --- list helper (compiled pattern at class level) ---
+    # K2b: HTML table helpers (_html_table_to_text / _split_html_table_rows) and
+    # their regexes (_TAG_RE / _ROW_RE / _CELL_RE) removed — table cleaning is
+    # the Parser's job now (§7.5/§14.1); the Chunker only carries cleaned text.
 
-    _TAG_RE = re.compile(r"<[^>]+>")
-    _ROW_RE = re.compile(r"<tr[^>]*>.*?</tr>", re.S | re.I)
-    _CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S | re.I)
     _LIST_ITEM_RE = re.compile(r"(?m)^[ \t]*(?:[-*+]|\d+\.)[ \t]+")
-
-    def _html_table_to_text(self, html: str) -> str:
-        """Convert an HTML table to plain text: ``r1c1 | r1c2\\nr2c1 | r2c2``.
-
-        Used as chunk.text for embedding (HTML tags are embedding noise, §15.1).
-        """
-        if not html:
-            return ""
-        lines: List[str] = []
-        for row in self._ROW_RE.findall(html):
-            cells = [self._TAG_RE.sub("", c).strip() for c in self._CELL_RE.findall(row)]
-            cells = [c for c in cells if c]
-            if cells:
-                lines.append(" | ".join(cells))
-        return "\n".join(lines)
-
-    def _split_html_table_rows(self, html: str, max_size: int) -> List[str]:
-        """Split an oversized table at row boundaries, each piece ≈ ≤ max_size."""
-        rows = self._ROW_RE.findall(html)
-        if not rows:
-            return []
-        plains = [self._html_table_to_text(r) for r in rows]
-        chunks: List[str] = []
-        current: List[str] = []
-        current_len = 0
-        for plain in plains:
-            row_len = len(plain) + 1  # +1 for the newline join
-            if current and current_len + row_len > max_size:
-                chunks.append("\n".join(current))
-                current = []
-                current_len = 0
-            current.append(plain)
-            current_len += row_len
-        if current:
-            chunks.append("\n".join(current))
-        return chunks
 
     def _split_list_by_items(self, text: str, max_size: int) -> List[str]:
         """Split a list at item boundaries (bullet ``- * +`` or numbered ``1.``)."""

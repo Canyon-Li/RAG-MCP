@@ -103,28 +103,37 @@ class TestTitleMerge:
 # =============================================================================
 
 class TestTableHandling:
-    def test_table_kept_whole_with_cleaned_text_and_html(self, chunker):
+    def test_table_carries_parser_plain_text(self, chunker):
+        """K2b: Chunker carries the Parser's cleaned plain text verbatim (no re-cleaning)."""
+        plain = "A: 1 | B: 2\nA: 3 | B: 4"  # Parser-cleaned "列名: 值" format
         html = "<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>"
-        doc = _doc([Section(type="table", text=html, html=html)])
+        doc = _doc([Section(type="table", text=plain, html=html)])
         chunks = chunker.split_document(doc)
 
         assert len(chunks) == 1
         c = chunks[0]
         assert c.metadata["section_type"] == "table"
-        # text cleaned: no HTML tags
-        assert "<" not in c.text
-        assert "A | B" in c.text
-        assert "1 | 2" in c.text
+        # chunk.text is the Parser's plain text, carried verbatim (NOT re-cleaned)
+        assert c.text == plain
         # original HTML preserved for display
         assert c.metadata["table_html"] == html
 
+    def test_table_chunker_does_not_reclean_html_tags(self, chunker):
+        """K2b: even if section.text contains stray HTML tags, Chunker carries it
+        as-is — proves Chunker is not cleaning (that's the Parser's job)."""
+        raw = "<p>not cleaned by parser</p>"
+        doc = _doc([Section(type="table", text=raw, html="<table></table>")])
+        chunks = chunker.split_document(doc)
+        assert len(chunks) == 1
+        assert chunks[0].text == raw  # tags preserved → Chunker did not clean
+
     def test_oversized_table_splits_at_rows_html_on_first_only(self, chunker):
-        # chunk_size=100 → 2× = 200. Build a table whose plain text > 200.
-        rows = "".join(
-            f"<tr><td>row {i} cell A</td><td>row {i} cell B</td></tr>" for i in range(50)
-        )
-        html = f"<table>{rows}</table>"
-        doc = _doc([Section(type="table", text=html, html=html)])
+        """K2b: oversized table (plain text > 2×chunk_size) splits at \\n rows;
+        table_html only on first chunk; row texts reassemble to original."""
+        # chunk_size=100 → 2× = 200. Build plain text > 200 chars.
+        plain = "\n".join(f"col1: value {i} A | col2: value {i} B" for i in range(30))
+        html = "<table>(omitted)</table>"
+        doc = _doc([Section(type="table", text=plain, html=html)])
         chunks = chunker.split_document(doc)
 
         assert len(chunks) > 1
@@ -132,10 +141,11 @@ class TestTableHandling:
         assert chunks[0].metadata["table_html"] == html
         for c in chunks[1:]:
             assert c.metadata.get("table_html") is None
-        # all chunks still typed as table
+        # all chunks typed as table
         for c in chunks:
             assert c.metadata["section_type"] == "table"
-            assert "<" not in c.text  # cleaned
+        # reassembling row texts reconstructs the original plain text
+        assert "\n".join(c.text for c in chunks) == plain
 
 
 # =============================================================================
