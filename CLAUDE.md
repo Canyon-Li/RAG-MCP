@@ -21,7 +21,7 @@ python -m src.mcp_server.server
 ```
 > ⚠️ `main.py` is a stub that only loads settings; it does **not** start the MCP server. The real entry point is `src/mcp_server/server.py:main`. The `mcp-server` console-script in `pyproject.toml` (`main:main`) is misleading — prefer the module form above, which is what the integration/e2e tests shell out to.
 
-Ingest documents (format is config-driven via `ingestion.loader.provider` — built-in providers: `pdf`, `docx`):
+Ingest documents (format is config-driven via `ingestion.parser.provider` — built-in providers: `pdf`, `pdf_text`, `pdf_table`, `docx`):
 ```powershell
 python scripts/ingest.py --path <file-or-dir> --collection <name> [--force] [--dry-run]
 ```
@@ -72,7 +72,7 @@ Observability           ─ src/observability/   trace context + Streamlit dashb
 
 ### Two pipelines, both traced end-to-end
 
-- **Ingestion** (`src/ingestion/pipeline.py::IngestionPipeline`): FileIntegrity (SHA256 skip) → `LoaderFactory.create()` (provider from `ingestion.loader`) → DocumentChunker (LangChain `RecursiveCharacterTextSplitter`) → Transform (ChunkRefiner + MetadataEnricher + ImageCaptioner) → Dense+Sparse encoding → Upsert (Chroma + BM25 + ImageStorage).
+- **Ingestion** (`src/ingestion/pipeline.py::IngestionPipeline`): FileIntegrity (SHA256 skip) → `ParserFactory.create()` (provider from `ingestion.parser`) → DocumentChunker (LangChain `RecursiveCharacterTextSplitter`) → Transform (ChunkRefiner + MetadataEnricher + ImageCaptioner) → Dense+Sparse encoding → Upsert (Chroma + BM25 + ImageStorage).
 - **Query** (`src/core/query_engine/`): QueryProcessor (jieba keyword extraction + filters) → parallel Dense (embedding cosine) + Sparse (BM25) → **RRF fusion** → optional Rerank (none / cross_encoder / llm) → ResponseBuilder (citations + multimodal assembly).
 
 Both pipelines take an explicit `TraceContext` (`src/core/trace/`) that records each stage's `method`/`provider`/latency and flushes one JSON Lines record to `logs/traces.jsonl`. The dashboard reads that file — it has no other API. **Stage names are stable categories** (`retrieval`, `rerank`, …); the concrete method goes in a `method`/`details` field so swapping backends doesn't break dashboard rendering.
@@ -84,7 +84,7 @@ Both pipelines take an explicit `TraceContext` (`src/core/trace/`) that records 
 ### Pluggable backends via Factory + Registry
 
 Every swappable component follows the same pattern — **Base class + Factory + Registry**:
-- A `Base*` abstract class: `BaseLLM`, `BaseVisionLLM`, `BaseEmbedding`, `BaseSplitter`, `BaseVectorStore`, `BaseReranker`, `BaseEvaluator`, `BaseLoader` (all in `src/libs/`), plus `BaseTransform` (`src/ingestion/transform/`).
+- A `Base*` abstract class: `BaseLLM`, `BaseVisionLLM`, `BaseEmbedding`, `BaseSplitter`, `BaseVectorStore`, `BaseReranker`, `BaseEvaluator`, `BaseParser` (all in `src/libs/`), plus `BaseTransform` (`src/ingestion/transform/`).
 - A `*Factory` with a class-level registry (`_PROVIDERS`) populated by `register_provider()` at import time. (Transforms are the exception — wired directly in the pipeline, no factory.)
 - Selection reads `settings.yaml` → **changing backends is config-only, no code edits**.
 
@@ -97,7 +97,7 @@ Images are extracted by the loader, saved to `data/images/{collection}/`, and ca
 ### Idempotency & storage layout (all gitignored under `data/` + `logs/`)
 
 - File-level: SHA256 in SQLite at `data/db/ingestion_history.db` → unchanged files are skipped (zero-cost incremental ingest). `--force` bypasses this.
-- Chunk-level: deterministic `chunk_id = hash(source_path + section + content_hash)`; upserts are idempotent.
+- Chunk-level: deterministic `chunk_id = {doc_id}_{index:04d}_{content_hash8}`; upserts are idempotent.
 - Stores: Chroma at `data/db/chroma/` (dense + sparse vectors + payload), BM25 pickle index at `data/db/bm25/{collection}/`, image files at `data/images/`, traces at `logs/traces.jsonl`.
 
 ## Conventions and gotchas
@@ -106,7 +106,7 @@ Images are extracted by the loader, saved to `data/images/{collection}/`, and ca
 - **Graceful degradation is a design rule.** LLM-backed transforms (`chunk_refiner`, `metadata_enricher`) fall back to rule-based logic when `use_llm: false` or the LLM call fails — they must not block the pipeline. Reranker failures fall back to RRF order; rerank/evaluation are **disabled by default** (`rerank.enabled: false`, `evaluation.enabled: false`).
 - **Windows console + Chinese output.** CLI scripts set `sys.stdout/stderr` to UTF-8 wrappers on `win32`; match this if adding scripts that print non-ASCII.
 - **Tests insert repo root onto `sys.path`** (`conftest.py` and each script), so `from src.…` imports work without installing the package. Integration/e2e tests shell out to `python -m src.mcp_server.server` as a subprocess.
-- **Adding a new document format:** subclass `BaseLoader` + `LoaderFactory.register_provider()` (built-in: `pdf`, `docx`); the rest of the pipeline is format-agnostic. Details in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
+- **Adding a new document format:** subclass `BaseParser` + `ParserFactory.register_provider()` (built-in: `pdf`, `pdf_text`, `pdf_table`, `docx`); the rest of the pipeline is format-agnostic. Details in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
 - **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`) — edit there, not in code.
 
 ## Skills (agent-driven workflow)

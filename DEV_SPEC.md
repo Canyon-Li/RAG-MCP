@@ -2078,7 +2078,7 @@ dashboard:
 | K3 | pdf_text provider + 别名 + _PROVIDER_EXTENSIONS | [x] | 2026-07-14 | 依赖 K1；pdf_text 别名 + extensions，21/21 全绿 |
 | K2b | Chunker table 职责修正（清洗→搬运，对齐 7.5） | [x] | 2026-07-14 | 依赖 K2；table 搬运 + 删 HTML 辅助，32/32 全绿 |
 | K4′ | pdf_table provider（pdfplumber 原生表格 + 降级链） | [x] | 2026-07-14 | 依赖 K2b,K3；pdfplumber 按 top 交替产 sections + 降级，63/63 全绿 |
-| K6 | 收尾：trace + 文档债 + QA/README | [ ] | | 依赖 K1–K4′ |
+| K6 | 收尾：trace + 文档债 + QA/README | [x] | 2026-07-14 | 依赖 K1–K4′；文档债清理 + trace method 动态 + degraded + qa_config profile + README |
 
 ---
 
@@ -2096,8 +2096,8 @@ dashboard:
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
 | 阶段 J | 2 | 2 | 100% |
-| 阶段 K | 6 | 5 | 83% |
-| **总计** | **76** | **75** | **99%** |
+| 阶段 K | 6 | 6 | 100% |
+| **总计** | **76** | **76** | **100%** |
 
 
 ---

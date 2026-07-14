@@ -274,13 +274,26 @@ class IngestionPipeline:
                 "image_count": image_count
             }
             if trace is not None:
-                trace.record_stage("load", {
-                    "method": "markitdown",
+                # K6: method reflects the actual parser provider (inferred from
+                # the Document — pdf_table produces sections; docx → docx; else
+                # pdf_text). degraded flagged when a parser fell back.
+                _doc_type = document.metadata.get("doc_type")
+                if _doc_type == "docx":
+                    _load_method = "docx"
+                elif document.metadata.get("sections"):
+                    _load_method = "pdf_table"
+                else:
+                    _load_method = "pdf_text"
+                _load_payload = {
+                    "method": _load_method,
                     "doc_id": document.id,
                     "text_length": len(document.text),
                     "image_count": image_count,
                     "text_preview": document.text,
-                }, elapsed_ms=_elapsed)
+                }
+                if document.metadata.get("degraded"):
+                    _load_payload["degraded"] = True
+                trace.record_stage("load", _load_payload, elapsed_ms=_elapsed)
             
             # ─────────────────────────────────────────────────────────────
             # Stage 3: Chunking

@@ -27,19 +27,19 @@ Then verify with `<Factory>.list_providers()` or by reading the registration blo
 | Vector store | `BaseVectorStore` (`libs/vector_store/`) | `VectorStoreFactory` | chroma |
 | Reranker | `BaseReranker` (`libs/reranker/`) | `RerankerFactory` | llm, cross_encoder |
 | Evaluator | `BaseEvaluator` (`libs/evaluator/`) | `EvaluatorFactory` | (scaffolded — see factory) |
-| Loader | `BaseLoader` (`libs/loader/`) | `LoaderFactory` | pdf, docx |
+| Parser | `BaseParser` (`libs/parser/`) | `ParserFactory` | pdf, pdf_text, pdf_table, docx |
 | Transform | `BaseTransform` (`ingestion/transform/`) | none — wired directly in `IngestionPipeline` | chunk_refiner, metadata_enricher, image_captioner |
 
 > The "Registered providers" column changes often; trust `list_providers()` / the registration code over this table.
 
-## Adding a new document format (Loader)
+## Adding a new document format (Parser)
 
 This is the extension path most likely to be used.
 
-1. Create `src/libs/loader/foo_loader.py` with `class FooLoader(BaseLoader)`.
-   Constructor contract (shared with PdfLoader / WordLoader so `LoaderFactory.create` builds any loader uniformly): `__init__(self, extract_images: bool, image_storage_dir: str | Path)`.
-2. In `loader_factory._register_builtin_providers()`: call `LoaderFactory.register_provider("foo", FooLoader)` and add `"foo": [".foo"]` to `_PROVIDER_EXTENSIONS`.
-3. Set `ingestion.loader.provider: foo` in `settings.yaml`.
-4. No CLI edit needed — `scripts/ingest.py` discovers files via `LoaderFactory.get_supported_extensions(provider)`, and `IngestionPipeline` calls `LoaderFactory.create(settings, collection)`. The rest of the pipeline (chunk / transform / embed / upsert) is format-agnostic and operates on the `Document` your loader returns.
+1. Create `src/libs/parser/foo_parser.py` with `class FooParser(BaseParser)`.
+   Constructor contract (shared with PdfTextParser / WordParser / PdfTableParser so `ParserFactory.create` builds any parser uniformly): `__init__(self, settings, collection: str, image_storage_dir: str | Path, **kwargs)`.
+2. In `parser_factory._register_builtin_providers()`: call `ParserFactory.register_provider("foo", FooParser)` and add `"foo": [".foo"]` to `_PROVIDER_EXTENSIONS`.
+3. Set `ingestion.parser.provider: foo` in `settings.yaml`.
+4. No CLI edit needed — `scripts/ingest.py` discovers files via `ParserFactory.get_supported_extensions(provider)`, and `IngestionPipeline` calls `ParserFactory.create(settings, collection)`. The rest of the pipeline (chunk / transform / embed / upsert) is format-agnostic and operates on the `Document` your parser returns.
 
-Image extraction is optional per-loader (governed by `extract_images`); if your format has no images, accept the flag and no-op.
+Image extraction is optional per-parser (governed by `extract_images`); if your format has no images, accept the flag and no-op.

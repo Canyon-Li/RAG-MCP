@@ -13,6 +13,9 @@ Profiles:
     no_vision        Vision LLM disabled
     invalid_llm_key  LLM API key set to invalid
     invalid_embed_key  Embedding API key set to invalid
+    pdf_table        Parser → pdf_table (pdfplumber native table extraction, K4′)
+    pdf_text         Parser → pdf_text (MarkItDown text-only)
+    degradation      Parser → pdf_table (pair with a bad PDF to exercise fallback)
 """
 
 import argparse
@@ -118,12 +121,44 @@ def apply_invalid_embed_key(settings: dict) -> dict:
     return settings
 
 
+def _set_parser(settings: dict, provider: str) -> dict:
+    """Switch ingestion parser provider (K4′). Removes any legacy loader block."""
+    ingestion = settings.setdefault("ingestion", {})
+    ingestion.pop("loader", None)  # legacy pre-K1 block
+    ingestion.setdefault("parser", {})["provider"] = provider
+    return settings
+
+
+def apply_pdf_table(settings: dict) -> dict:
+    """Parser → pdf_table (pdfplumber native table extraction, K4′)."""
+    _set_parser(settings, "pdf_table")
+    print("   Parser -> pdf_table (pdfplumber native tables)")
+    return settings
+
+
+def apply_pdf_text(settings: dict) -> dict:
+    """Parser → pdf_text (MarkItDown text-only)."""
+    _set_parser(settings, "pdf_text")
+    print("   Parser -> pdf_text (MarkItDown text-only)")
+    return settings
+
+
+def apply_degradation(settings: dict) -> dict:
+    """Parser → pdf_table; pair with a pdfplumber-hostile PDF to exercise fallback."""
+    _set_parser(settings, "pdf_table")
+    print("   Parser -> pdf_table (degradation test: use a bad PDF)")
+    return settings
+
+
 PROFILES = {
     "deepseek": apply_deepseek,
     "rerank_llm": apply_rerank_llm,
     "no_vision": apply_no_vision,
     "invalid_llm_key": apply_invalid_llm_key,
     "invalid_embed_key": apply_invalid_embed_key,
+    "pdf_table": apply_pdf_table,
+    "pdf_text": apply_pdf_text,
+    "degradation": apply_degradation,
 }
 
 

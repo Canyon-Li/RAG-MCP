@@ -39,7 +39,7 @@
 
 | 模块 | 能力 | 说明 |
 |------|------|------|
-| **Ingestion Pipeline** | PDF → Markdown → Chunk → Transform → Embedding → Upsert | 全链路数据摄取，支持多模态图片描述（Image Captioning） |
+| **Ingestion Pipeline** | PDF → Markdown/表格 → Chunk → Transform → Embedding → Upsert | 全链路数据摄取，pdf_table 原生表格提取（pdfplumber）+ 多模态图片描述（Image Captioning） |
 | **Hybrid Search** | Dense (向量) + Sparse (BM25) + RRF Fusion + Rerank | 粗排召回 + 精排重排的两段式检索架构 |
 | **MCP Server** | 标准 MCP 协议暴露 Tools | `query_knowledge_hub`、`list_collections`、`get_document_summary` |
 | **Dashboard** | Streamlit 六页面管理平台 | 系统总览 / 数据浏览 / Ingestion 管理 / 摄取追踪 / 查询追踪 / 评估面板 |
@@ -360,9 +360,11 @@ Skill 采用 **"写作原则 + 项目亮点 + 用户画像 = 定制化简历"** 
 
 **直接问 AI 帮你扩展即可。**
 
-项目的 Loader 层采用了可插拔的抽象设计（`BaseLoader`），目前默认实现了 PDF Loader。如果你需要支持 Word、Markdown、HTML 等其他格式，整体架构已经设计好了扩展点，让 AI 帮你新增一个对应的 Loader 实现就可以了。
+项目的 Parser 层采用了可插拔的抽象设计（`BaseParser`），目前默认实现了 `pdf_table`（pdfplumber 原生表格提取）、`pdf_text`（MarkItDown 纯文本）、`docx`（Word）三种 parser。如果你需要支持 Markdown、HTML 等其他格式，整体架构已经设计好了扩展点，让 AI 帮你新增一个对应的 Parser 实现就可以了。
 
-比如告诉 AI："帮我新增一个 Word 文档的 Loader，参考现有的 PDF Loader 实现"，AI 完全可以搞定。
+> **PDF 表格能力**：`pdf_table` 用 pdfplumber 提取**线条/对齐型表格**（Word/Excel 导出的文本型 PDF），表格进 `metadata.table_html`（展示）+ 清洗纯文本（检索）。**扫描件/图片型 PDF 的表格不支持**（需 OCR），此时 `pdf_table` 自动降级到 `pdf_text` 纯文本（表格信息丢失，标 `degraded=true`）。
+
+比如告诉 AI："帮我新增一个 Markdown 文档的 Parser，参考现有的 pdf_text Parser 实现"，AI 完全可以搞定。
 
 ### 5. 如何集成到 AI 工具中（Copilot / Cursor / Claude Code 等）？
 
