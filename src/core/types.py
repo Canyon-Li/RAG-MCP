@@ -141,6 +141,54 @@ class Chunk:
 
 
 @dataclass
+class Section:
+    """A typed structural segment produced by a Parser (K2).
+
+    Layout-aware parsers (e.g. pdf_deep via the RAGFlow deepdoc sidecar)
+    populate ``Document.metadata["sections"]`` with Section-like dicts. The
+    DocumentChunker respects type boundaries when splitting — tables are kept
+    whole, titles merge into adjacent text, headers/footers are dropped, etc.
+    See pdf改进计划.md §7.3 / §15.2.
+
+    Note: when stored in ``Document.metadata["sections"]`` these are plain dicts
+    (JSON-serializable); this dataclass exists for type clarity and test
+    construction (``Section(...).to_dict()``).
+
+    Chunk-level optional metadata keys produced from sections:
+        - section_type: the source Section.type inherited by the chunk
+        - bbox: the source Section.bbox (tables / figures)
+        - table_html: original HTML for table chunks (display-grade); the chunk's
+          ``text`` holds cleaned plain text for embedding (pdf改进计划.md §15.1)
+
+    Attributes:
+        type: Segment category — title | text | table | figure | figure_caption |
+              list | header | footer | equation.
+        text: Segment content. For ``table`` this is the HTML; for others, plain
+              text (figure segments carry ``[IMAGE:{id}]`` placeholders).
+        page: Source page number (1-based for paginated docs; 1 otherwise).
+        bbox: Optional bounding box ``{x0, top, x1, bottom}`` in source coords.
+        images: Image refs associated with this segment (figures / captions),
+                following the Document.images contract.
+        html: Optional display-grade HTML (tables; redundant with ``text``).
+    """
+    type: str
+    text: str
+    page: int = 1
+    bbox: Optional[Dict[str, Any]] = None
+    images: List[Dict[str, Any]] = field(default_factory=list)
+    html: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Section":
+        """Create Section from dictionary."""
+        return cls(**data)
+
+
+@dataclass
 class ChunkRecord:
     """Represents a fully processed chunk ready for storage and retrieval.
     
