@@ -138,6 +138,7 @@ class ParserFactory:
     # registered in _register_builtin_providers.
     _PROVIDER_EXTENSIONS: dict[str, list[str]] = {
         "pdf": [".pdf"],
+        "pdf_text": [".pdf"],  # K3: alias of pdf
         "docx": [".docx"],
     }
 
@@ -165,6 +166,9 @@ def _register_builtin_providers() -> None:
         from src.libs.parser.pdf_text_parser import PdfTextParser
 
         ParserFactory.register_provider("pdf", PdfTextParser)
+        # K3: pdf_text is an explicit alias for pdf (both → PdfTextParser),
+        # the text-only tier of the PDF degradation chain (pdf_deep → pdf_text).
+        ParserFactory.register_provider("pdf_text", PdfTextParser)
     except ImportError:
         pass  # PdfTextParser (or its deps) not available
 

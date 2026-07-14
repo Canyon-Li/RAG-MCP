@@ -246,3 +246,36 @@ class TestParserFactoryCreate:
         parser = ParserFactory.create(settings, collection="c")
         assert isinstance(parser, FakeParser)
         assert parser.extract_images is False  # read from legacy loader block
+
+
+class TestBuiltinAliases:
+    """K3: pdf_text is an explicit alias for pdf (both → PdfTextParser).
+
+    These tests re-register builtins in setup_method because other test classes
+    clear the shared ``_PROVIDERS`` registry in their own setup/teardown.
+    """
+
+    def setup_method(self):
+        from src.libs.parser.parser_factory import _register_builtin_providers
+        _register_builtin_providers()
+
+    def test_pdf_and_pdf_text_both_registered(self):
+        from src.libs.parser.pdf_text_parser import PdfTextParser
+        assert "pdf" in ParserFactory._PROVIDERS
+        assert "pdf_text" in ParserFactory._PROVIDERS
+        # alias points at the same class object
+        assert ParserFactory._PROVIDERS["pdf_text"] is ParserFactory._PROVIDERS["pdf"]
+        assert ParserFactory._PROVIDERS["pdf_text"] is PdfTextParser
+
+    def test_pdf_text_extensions(self):
+        assert ParserFactory.get_supported_extensions("pdf_text") == [".pdf"]
+        assert ParserFactory.get_supported_extensions("pdf") == [".pdf"]
+
+    def test_create_with_pdf_text_routes_to_pdf_text_parser(self):
+        from src.libs.parser.pdf_text_parser import PdfTextParser
+        settings = MagicMock()
+        settings.ingestion.parser.provider = "pdf_text"
+        settings.ingestion.parser.extract_images = True
+        settings.ingestion.loader = None
+        parser = ParserFactory.create(settings, collection="c")
+        assert isinstance(parser, PdfTextParser)
