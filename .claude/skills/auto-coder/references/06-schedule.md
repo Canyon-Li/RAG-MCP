@@ -157,6 +157,19 @@
 | J1 | LoaderFactory + Pipeline Loader 配置化（前置基建） | [x] | 2026-07-09 | LoaderFactory+LoaderSettings，pipeline 配置化，17 单元测试+配置/PDF 回归通过 |
 | J2 | WordLoader（DOCX）实现 | [x] | 2026-07-09 | WordLoader(markitdown+python-docx回退+zipfile图片)，docx注册，18契约+10集成测试通过 |
 
+#### 阶段 K：PDF 深度解析（RAGFlow deepdoc 移植）
+
+> 详细架构决策、接口契约、实施细节见 [pdf改进计划.md](pdf改进计划.md)（权威）。本表仅跟踪任务状态。
+
+| 任务编号 | 任务名称 | 状态 | 完成日期 | 备注 |
+|---------|---------|------|---------|------|
+| K1 | Loader→Parser 正名 + Factory 统一 settings 构造 | [x] | 2026-07-14 | 新建 src/libs/parser/；parser 测试 76/76，影响域 15 个 loader→parser 注入失败已修复 |
+| K2 | Section 数据结构 + Chunker 升级（优先 sections 退化 text） | [ ] | | 依赖 K1；老路径必须 100% 回归 |
+| K3 | pdf_text provider + 别名 + _PROVIDER_EXTENSIONS | [ ] | | 依赖 K1；现 PdfLoader 降格 |
+| K4 | sidecar 服务化（/parse/pdf 端点 + docker） | [ ] | | 可与 K5 预备并行 |
+| K5 | pdf_deep provider + 降级链（双探测） | [ ] | | 依赖 K3,K4；HTTP client 抽象注入 |
+| K6 | 收尾：trace + 文档债 + QA/README/setup | [ ] | | 依赖 K1–K5 |
+
 ---
 
 ### 📈 总体进度
@@ -173,7 +186,8 @@
 | 阶段 H | 5 | 5 | 100% |
 | 阶段 I | 5 | 5 | 100% |
 | 阶段 J | 2 | 2 | 100% |
-| **总计** | **70** | **70** | **100%** |
+| 阶段 K | 6 | 1 | 17% |
+| **总计** | **76** | **71** | **93%** |
 
 
 ---

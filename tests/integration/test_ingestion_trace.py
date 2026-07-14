@@ -58,8 +58,8 @@ class FakePipeline:
         self.integrity_checker.compute_sha256.return_value = "abc123"
         self.integrity_checker.should_skip.return_value = False
 
-        self.loader = MagicMock()
-        self.loader.load.return_value = _fake_document()
+        self.parser = MagicMock()
+        self.parser.parse.return_value = _fake_document()
 
         self.chunker = MagicMock()
         chunks = _fake_chunks()

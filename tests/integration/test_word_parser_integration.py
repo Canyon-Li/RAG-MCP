@@ -1,11 +1,14 @@
-"""Integration tests for WordLoader against real .docx files.
+"""Integration tests for WordParser against real .docx files.
 
-Also verifies LoaderFactory integration: the ``docx`` provider is registered
-and ``LoaderFactory.create(..., provider=docx)`` returns a WordLoader, so the
-pluggable wiring from J1 actually reaches the new loader.
+Also verifies ParserFactory integration: the ``docx`` provider is registered
+and ``ParserFactory.create(...)`` returns a WordParser, so the pluggable wiring
+actually reaches the parser.
+
+K1 (DEV_SPEC phase K): renamed from test_word_loader_integration.py.
+WordLoader → WordParser; LoaderFactory → ParserFactory; load() → parse().
 
 Fixtures are generated on-the-fly with python-docx; the whole module is skipped
-if python-docx is unavailable (WordLoader itself only needs markitdown + stdlib).
+if python-docx is unavailable (WordParser itself only needs markitdown + stdlib).
 """
 
 from pathlib import Path
@@ -20,8 +23,8 @@ import docx  # noqa: E402
 from PIL import Image as PILImage  # noqa: E402
 
 from src.core.types import Document  # noqa: E402
-from src.libs.loader.loader_factory import LoaderFactory  # noqa: E402
-from src.libs.loader.word_loader import WordLoader  # noqa: E402
+from src.libs.parser.parser_factory import ParserFactory  # noqa: E402
+from src.libs.parser.word_parser import WordParser  # noqa: E402
 
 
 @pytest.fixture
@@ -46,24 +49,24 @@ def images_docx(tmp_path):
     return path
 
 
-class TestWordLoaderWithRealFiles:
-    """End-to-end WordLoader behavior against real DOCX files."""
+class TestWordParserWithRealFiles:
+    """End-to-end WordParser behavior against real DOCX files."""
 
-    def test_load_simple_docx(self, simple_docx, tmp_path):
-        loader = WordLoader(image_storage_dir=str(tmp_path / "images"))
-        doc = loader.load(simple_docx)
+    def test_parse_simple_docx(self, simple_docx, tmp_path):
+        parser = WordParser(image_storage_dir=str(tmp_path / "images"))
+        doc = parser.parse(simple_docx)
 
         assert isinstance(doc, Document)
         assert doc.metadata["doc_type"] == "docx"
         assert "doc_hash" in doc.metadata
         assert len(doc.text) > 0
 
-    def test_load_docx_with_images(self, images_docx, tmp_path):
-        loader = WordLoader(
+    def test_parse_docx_with_images(self, images_docx, tmp_path):
+        parser = WordParser(
             extract_images=True,
             image_storage_dir=str(tmp_path / "images"),
         )
-        doc = loader.load(images_docx)
+        doc = parser.parse(images_docx)
 
         images = doc.metadata.get("images", [])
         assert len(images) >= 1
@@ -71,22 +74,22 @@ class TestWordLoaderWithRealFiles:
             assert Path(img["path"]).exists()
             assert f"[IMAGE: {img['id']}]" in doc.text
 
-    def test_load_without_image_extraction(self, simple_docx, tmp_path):
-        loader = WordLoader(
+    def test_parse_without_image_extraction(self, simple_docx, tmp_path):
+        parser = WordParser(
             extract_images=False,
             image_storage_dir=str(tmp_path / "images"),
         )
-        doc = loader.load(simple_docx)
+        doc = parser.parse(simple_docx)
         assert "images" not in doc.metadata or doc.metadata.get("images") == []
 
     def test_document_is_serializable(self, simple_docx, tmp_path):
-        loader = WordLoader(image_storage_dir=str(tmp_path / "images"))
-        doc = loader.load(simple_docx)
+        parser = WordParser(image_storage_dir=str(tmp_path / "images"))
+        doc = parser.parse(simple_docx)
         assert Document.from_dict(doc.to_dict()).id == doc.id
 
     def test_file_hash_consistency(self, simple_docx, tmp_path):
-        loader = WordLoader(image_storage_dir=str(tmp_path / "images"))
-        assert loader.load(simple_docx).id == loader.load(simple_docx).id
+        parser = WordParser(image_storage_dir=str(tmp_path / "images"))
+        assert parser.parse(simple_docx).id == parser.parse(simple_docx).id
 
     def test_different_files_different_hash(self, tmp_path):
         f1, f2 = tmp_path / "a.docx", tmp_path / "b.docx"
@@ -97,17 +100,17 @@ class TestWordLoaderWithRealFiles:
         d2.add_paragraph("BBB")
         d2.save(str(f2))
 
-        loader = WordLoader(image_storage_dir=str(tmp_path / "images"))
-        assert loader.load(f1).id != loader.load(f2).id
+        parser = WordParser(image_storage_dir=str(tmp_path / "images"))
+        assert parser.parse(f1).id != parser.parse(f2).id
 
     def test_custom_image_storage_dir(self, images_docx, tmp_path):
         """Extracted images land under the configured image_storage_dir."""
         custom = tmp_path / "custom_images"
-        loader = WordLoader(
+        parser = WordParser(
             extract_images=True,
             image_storage_dir=str(custom),
         )
-        doc = loader.load(images_docx)
+        doc = parser.parse(images_docx)
         assert len(doc.metadata["images"]) >= 1
 
         for img in doc.metadata["images"]:
@@ -115,23 +118,23 @@ class TestWordLoaderWithRealFiles:
             assert Path(img["path"]).resolve().is_relative_to(custom.resolve())
 
 
-class TestLoaderFactoryDocxIntegration:
-    """J2 wiring: docx provider registered and routable via LoaderFactory."""
+class TestParserFactoryDocxIntegration:
+    """K1 wiring: docx provider registered and routable via ParserFactory."""
 
     def test_docx_provider_registered(self):
-        assert "docx" in LoaderFactory.list_providers()
+        assert "docx" in ParserFactory.list_providers()
 
-    def test_factory_creates_word_loader(self):
+    def test_factory_creates_word_parser(self):
         settings = MagicMock()
-        settings.ingestion.loader.provider = "docx"
-        settings.ingestion.loader.extract_images = True
+        settings.ingestion.parser.provider = "docx"
+        settings.ingestion.parser.extract_images = True
 
-        loader = LoaderFactory.create(settings, collection="test_coll")
-        assert isinstance(loader, WordLoader)
+        parser = ParserFactory.create(settings, collection="test_coll")
+        assert isinstance(parser, WordParser)
         # image_storage_dir is derived from the collection argument
-        assert "test_coll" in str(loader.image_storage_dir)
+        assert "test_coll" in str(parser.image_storage_dir)
 
     def test_factory_docx_and_pdf_both_registered(self):
-        providers = LoaderFactory.list_providers()
+        providers = ParserFactory.list_providers()
         assert "pdf" in providers
         assert "docx" in providers

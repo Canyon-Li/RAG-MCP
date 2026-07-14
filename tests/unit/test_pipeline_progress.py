@@ -31,9 +31,9 @@ def _make_fake_pipeline() -> object:
     fp.integrity_checker.compute_sha256.return_value = "hash123"
     fp.integrity_checker.should_skip.return_value = False
 
-    # Stage 2: loader
-    fp.loader = MagicMock()
-    fp.loader.load.return_value = Document(
+    # Stage 2: parser
+    fp.parser = MagicMock()
+    fp.parser.parse.return_value = Document(
         id="doc1", text="Hello world. " * 50, metadata={"source_path": "test.pdf", "images": []}
     )
 

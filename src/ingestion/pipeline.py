@@ -27,7 +27,7 @@ from src.observability.logger import get_logger
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
-from src.libs.loader.loader_factory import LoaderFactory
+from src.libs.parser.parser_factory import ParserFactory
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
@@ -141,14 +141,14 @@ class IngestionPipeline:
         self.integrity_checker = SQLiteIntegrityChecker(db_path=str(resolve_path("data/db/ingestion_history.db")))
         logger.info("  ✓ FileIntegrityChecker initialized")
         
-        # Stage 2: Loader (J1: pluggable via LoaderFactory; provider from settings.yaml)
-        self.loader = LoaderFactory.create(settings, collection)
-        _loader_provider = (
-            settings.ingestion.loader.provider
-            if settings.ingestion and settings.ingestion.loader
+        # Stage 2: Parser (K1: pluggable via ParserFactory; provider from settings.yaml)
+        self.parser = ParserFactory.create(settings, collection)
+        _parser_provider = (
+            settings.ingestion.parser.provider
+            if settings.ingestion and settings.ingestion.parser
             else "pdf"
         )
-        logger.info(f"  ✓ Loader initialized (provider: {_loader_provider})")
+        logger.info(f"  ✓ Parser initialized (provider: {_parser_provider})")
         
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)
@@ -257,7 +257,7 @@ class IngestionPipeline:
             _notify("load", 2)
             
             _t0 = time.monotonic()
-            document = self.loader.load(str(file_path))
+            document = self.parser.parse(str(file_path))
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text

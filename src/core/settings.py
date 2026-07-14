@@ -168,11 +168,12 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
-class LoaderSettings:
-    """Pluggable document loader configuration (J1).
+class ParserSettings:
+    """Pluggable document parser configuration (K1, renamed from LoaderSettings).
 
-    Backwards-compatible: when ``ingestion.loader`` is absent the pipeline
-    defaults to the ``pdf`` provider with image extraction enabled.
+    Backwards-compatible: when ``ingestion.parser`` is absent the pipeline
+    defaults to the ``pdf`` provider with image extraction enabled. The legacy
+    ``ingestion.loader`` block is still accepted (deprecated).
     """
     provider: str
     extract_images: bool = True
@@ -186,7 +187,7 @@ class IngestionSettings:
     batch_size: int
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
-    loader: Optional[LoaderSettings] = None  # J1: 可插拔 Loader 配置（缺省默认 pdf）
+    parser: Optional[ParserSettings] = None  # K1: 可插拔 Parser 配置（缺省默认 pdf）
 
 
 @dataclass(frozen=True)
@@ -217,11 +218,22 @@ class Settings:
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
-            # J1: pluggable loader config (optional; defaults to pdf provider)
-            loader_settings = None
-            if "loader" in ingestion:
+            # K1: pluggable parser config (optional; defaults to pdf provider).
+            # Accept "parser" (new) or "loader" (legacy, deprecated pre-K1 configs).
+            parser_settings = None
+            if "parser" in ingestion:
+                parser_cfg = _require_mapping(ingestion, "parser", "ingestion")
+                parser_settings = ParserSettings(
+                    provider=_require_str(parser_cfg, "provider", "ingestion.parser"),
+                    extract_images=(
+                        _require_bool(parser_cfg, "extract_images", "ingestion.parser")
+                        if "extract_images" in parser_cfg else True
+                    ),
+                )
+            elif "loader" in ingestion:
+                # Legacy fallback for pre-K1 configs.
                 loader_cfg = _require_mapping(ingestion, "loader", "ingestion")
-                loader_settings = LoaderSettings(
+                parser_settings = ParserSettings(
                     provider=_require_str(loader_cfg, "provider", "ingestion.loader"),
                     extract_images=(
                         _require_bool(loader_cfg, "extract_images", "ingestion.loader")
@@ -236,7 +248,7 @@ class Settings:
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
-                loader=loader_settings,
+                parser=parser_settings,
             )
 
         vision_llm_settings = None

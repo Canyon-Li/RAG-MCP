@@ -1,17 +1,19 @@
-"""Word (DOCX) Loader implementation.
+"""Word (DOCX) Parser implementation.
 
-Mirrors PdfLoader's contract: MarkItDown for text → Markdown, plus embedded
+Mirrors PdfTextParser's contract: MarkItDown for text → Markdown, plus embedded
 image extraction with ``[IMAGE: {id}]`` placeholders (C1 image contract).
 A .docx file is a ZIP archive whose images live under ``word/media/``; we read
 them with the stdlib ``zipfile`` module (no python-docx dependency at runtime)
 and append placeholders at the end of the text — the same simplification
-PdfLoader uses for PDF page boundaries.
+PdfTextParser uses for PDF page boundaries.
 
 Graceful Degradation:
 - If MarkItDown is unavailable → ImportError at construction.
 - If image extraction fails → log a warning and continue text-only.
 
-J2 (DEV_SPEC phase J). Registered as the ``docx`` provider in LoaderFactory.
+J2 (DEV_SPEC phase J). Registered as the ``docx`` provider in ParserFactory.
+K1 (DEV_SPEC phase K): renamed from WordLoader → WordParser; constructor
+contract unified (see pdf改进计划.md §15.4). Parsing logic unchanged.
 """
 
 from __future__ import annotations
@@ -47,23 +49,25 @@ except ImportError:
     DOCX_FALLBACK_AVAILABLE = False
 
 from src.core.types import Document
-from src.libs.loader.base_loader import BaseLoader
+from src.libs.parser.base_parser import BaseParser
 
 logger = logging.getLogger(__name__)
 
 
-class WordLoader(BaseLoader):
-    """DOCX loader using MarkItDown for text + zipfile for embedded images.
+class WordParser(BaseParser):
+    """DOCX parser using MarkItDown for text + zipfile for embedded images.
 
-    This loader:
+    This parser:
     1. Extracts text from .docx and converts to Markdown (MarkItDown).
-    2. Extracts embedded images from ``word/media/`` to data/images/{doc_hash}/.
+    2. Extracts embedded images from ``word/media/`` to data/images/{collection}/{doc_hash}/.
     3. Appends ``[IMAGE: {image_id}]`` placeholders in extraction order.
     4. Records image metadata in ``Document.metadata.images`` (C1 contract).
 
-    Constructor contract (shared with PdfLoader so LoaderFactory can build both):
+    Constructor contract (shared with PdfTextParser so ParserFactory can build both):
+        settings: Application settings.
+        collection: Collection name scoping the image storage directory.
+        image_storage_dir: Base directory for image storage (Factory-resolved).
         extract_images: Enable/disable image extraction (default True).
-        image_storage_dir: Base directory for image storage (default data/images).
 
     Graceful Degradation:
         If image extraction fails, logs a warning and continues text-only.
@@ -74,30 +78,38 @@ class WordLoader(BaseLoader):
 
     def __init__(
         self,
-        extract_images: bool = True,
+        settings: Any = None,
+        collection: str = "default",
         image_storage_dir: str | Path = "data/images",
+        extract_images: bool = True,
+        **kwargs: Any,
     ) -> None:
-        """Initialize Word Loader.
+        """Initialize Word Parser.
 
         Args:
+            settings: Application settings (provider-specific config if needed).
+            collection: Collection name scoping the image storage directory.
+            image_storage_dir: Base directory for storing extracted images
+                (Factory resolves this to ``data/images/{collection}/``).
             extract_images: Whether to extract embedded images from the DOCX.
-            image_storage_dir: Base directory for storing extracted images.
 
         Raises:
             ImportError: If MarkItDown is not installed.
         """
         if not MARKITDOWN_AVAILABLE:
             raise ImportError(
-                "MarkItDown is required for WordLoader. "
+                "MarkItDown is required for WordParser. "
                 "Install with: pip install markitdown"
             )
 
+        self.settings = settings
+        self.collection = collection
         self.extract_images = extract_images
         self.image_storage_dir = Path(image_storage_dir)
         self._markitdown = MarkItDown()
 
-    def load(self, file_path: str | Path) -> Document:
-        """Load and parse a .docx file.
+    def parse(self, file_path: str | Path) -> Document:
+        """Parse a .docx file.
 
         Args:
             file_path: Path to the DOCX file.
@@ -117,7 +129,7 @@ class WordLoader(BaseLoader):
         doc_hash = self._compute_file_hash(path)
         doc_id = f"doc_{doc_hash[:16]}"
 
-        # Parse text: prefer MarkItDown (consistent with PdfLoader); fall back
+        # Parse text: prefer MarkItDown (consistent with PdfTextParser); fall back
         # to python-docx when MarkItDown's docx backend (mammoth) is missing.
         text_content = self._extract_text(path)
 
@@ -148,7 +160,7 @@ class WordLoader(BaseLoader):
     def _extract_text(self, path: Path) -> str:
         """Extract Markdown text from the DOCX.
 
-        Prefers MarkItDown (high-quality Markdown, consistent with PdfLoader).
+        Prefers MarkItDown (high-quality Markdown, consistent with PdfTextParser).
         Falls back to python-docx when MarkItDown's docx backend is unavailable
         (e.g. mammoth not installed) — graceful degradation per project rules.
         """
@@ -202,7 +214,7 @@ class WordLoader(BaseLoader):
 
         DOCX stores images under ``word/media/`` (image1.png, image2.jpeg, ...).
         Placeholders are appended at the end of the text in extraction order —
-        the same simplification strategy PdfLoader uses for PDF page boundaries.
+        the same simplification strategy PdfTextParser uses for PDF page boundaries.
 
         Args:
             docx_path: Path to the DOCX file.
