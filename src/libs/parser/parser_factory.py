@@ -139,6 +139,7 @@ class ParserFactory:
     _PROVIDER_EXTENSIONS: dict[str, list[str]] = {
         "pdf": [".pdf"],
         "pdf_text": [".pdf"],  # K3: alias of pdf
+        "pdf_table": [".pdf"],  # K4′: native table extraction (pdfplumber)
         "docx": [".docx"],
     }
 
@@ -178,6 +179,13 @@ def _register_builtin_providers() -> None:
         ParserFactory.register_provider("docx", WordParser)
     except ImportError:
         pass  # WordParser (or its deps) not available
+
+    try:
+        from src.libs.parser.pdf_table_parser import PdfTableParser
+
+        ParserFactory.register_provider("pdf_table", PdfTableParser)
+    except ImportError:
+        pass  # PdfTableParser (or pdfplumber) not available
 
 
 # Register providers when module is imported
