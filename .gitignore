@@ -105,3 +105,9 @@ traces.jsonl
 .env.*.local
 secrets.yaml
 nonexistent_traces.jsonl/
+启动流程-给我看的.md
+上一次输出的citation.md
+
+# Per-user / machine-local — not portable
+.mcp.json
+.claude/skills/auto-coder/.spec_hash

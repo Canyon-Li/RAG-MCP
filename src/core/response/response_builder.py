@@ -9,6 +9,7 @@ This module builds structured responses for MCP tools, combining:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
@@ -274,9 +275,15 @@ class ResponseBuilder:
             if citation.page is not None:
                 lines.append(f"**页码:** {citation.page}")
             
-            # Content snippet
-            snippet = self._truncate_text(result.text, self.snippet_max_length)
-            lines.append(f"\n> {snippet}\n")
+            # Content snippet — table chunks render as a Markdown table from
+            # metadata.table_html (pdf改进计划.md §15.1: plain text for embed,
+            # HTML for display); other chunks fall back to the plain-text snippet.
+            table_md = self._render_table_snippet(result)
+            if table_md:
+                lines.append(f"\n{table_md}\n")
+            else:
+                snippet = self._truncate_text(result.text, self.snippet_max_length)
+                lines.append(f"\n> {snippet}\n")
         
         # Additional results indicator
         if len(results) > display_count:
@@ -341,3 +348,59 @@ class ResponseBuilder:
         # Truncate at word boundary
         truncated = cleaned[:max_length].rsplit(" ", 1)[0]
         return truncated + "..."
+
+    def _render_table_snippet(self, result: RetrievalResult) -> Optional[str]:
+        """Render a table chunk as a GFM Markdown table.
+
+        Tables carry two representations (pdf改进计划.md §15.1): ``chunk.text``
+        is cleaned plain text ("列名: 值") used for embedding/BM25, while
+        ``metadata.table_html`` keeps the original row/column structure for
+        display. This renders the HTML form so downstream LLMs/users see an
+        actual table instead of the flattened text used for retrieval.
+
+        Returns None when the result is not a table or its HTML can't be
+        parsed; the caller then falls back to the plain-text snippet.
+        """
+        if result.metadata.get("section_type") != "table":
+            return None
+        html = result.metadata.get("table_html")
+        if not html:
+            return None
+        return self._html_table_to_markdown(html)
+
+    @staticmethod
+    def _html_table_to_markdown(html: str) -> Optional[str]:
+        """Convert the Parser's ``<table><tr><td>…</td></tr></table>`` to GFM.
+
+        The Parser emits header cells as plain ``<td>`` in the first row
+        (see ``PdfTableParser._table_to_html_and_plain``); the first row is
+        therefore treated as the header. Ragged rows are right-padded with
+        empty cells. Returns None if no rows/cells can be parsed.
+        """
+        rows = re.findall(r"<tr>(.*?)</tr>", html, flags=re.S | re.I)
+        if not rows:
+            return None
+        grid: List[List[str]] = []
+        for tr in rows:
+            cells = re.findall(r"<td>(.*?)</td>", tr, flags=re.S | re.I)
+            cells = [re.sub(r"\s+", " ", c).strip() for c in cells]
+            if cells:
+                grid.append(cells)
+        if not grid:
+            return None
+        width = max(len(row) for row in grid)
+        grid = [row + [""] * (width - len(row)) for row in grid]
+
+        def _clean(cell: str) -> str:
+            # Escape pipes and collapse newlines so cell content can't break
+            # the GFM table structure.
+            return cell.replace("|", "\\|").replace("\n", " ")
+
+        header = [_clean(c) for c in grid[0]]
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join("---" for _ in header) + " |",
+        ]
+        for row in grid[1:]:
+            lines.append("| " + " | ".join(_clean(c) for c in row) + " |")
+        return "\n".join(lines)

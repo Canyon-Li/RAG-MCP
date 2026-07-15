@@ -1,0 +1,33 @@
+<html><head><meta charset='utf-8'><style>
+body{font-family:sans-serif;padding:20px} table{border-collapse:collapse;margin:8px 0} 
+td{border:1px solid #999;padding:4px 8px} .meta{color:#666;font-size:12px} 
+.plain{background:#f5f5f5;padding:6px;font-size:12px;white-space:pre-wrap;margin-bottom:16px}
+</style></head><body>
+<h2>chinese_table_chart_doc.pdf — 表格提取质量检查</h2>
+<div><div class='meta'>表#0 (page 1)</div><table><tr><td>文档类型</td><td>性能评测报告</td></tr><tr><td>版本</td><td>v1.0 — 2026 年 2 月</td></tr><tr><td>用途</td><td>QA 测试 / Section O</td></tr></table><div class='plain'>纯文本: 文档类型: 版本 | 性能评测报告: v1.0 — 2026 年 2 月
+文档类型: 用途 | 性能评测报告: QA 测试 / Section O</div></div>
+<div><div class='meta'>表#1 (page 3)</div><table><tr><td>模型名称</td><td>维度</td><td>延迟(ms)</td><td>成本</td><td>中文质量</td></tr><tr><td>text-embedding-ada-002</td><td>1536</td><td>25</td><td>$0.0001/1K tokens</td><td>良好</td></tr><tr><td>text-embedding-3-small</td><td>1536</td><td>20</td><td>$0.00002/1K tokens</td><td>良好</td></tr><tr><td>text-embedding-3-large</td><td>3072</td><td>35</td><td>$0.00013/1K tokens</td><td>优秀</td></tr><tr><td>BGE-large-zh</td><td>1024</td><td>15</td><td>免费（本地）</td><td>优秀</td></tr><tr><td>GTE-large-zh</td><td>1024</td><td>18</td><td>免费（本地）</td><td>优秀</td></tr><tr><td>M3E-base</td><td>768</td><td>12</td><td>免费（本地）</td><td>良好</td></tr></table><div class='plain'>纯文本: 模型名称: text-embedding-ada-002 | 维度: 1536 | 延迟(ms): 25 | 成本: $0.0001/1K tokens | 中文质量: 良好
+模型名称: text-embedding-3-small | 维度: 1536 | 延迟(ms): 20 | 成本: $0.00002/1K tokens | 中文质量: 良好
+模型名称: text-embedding-3-large | 维度: 3072 | 延迟(ms): 35 | 成本: $0.00013/1K tokens | 中文质量: 优秀
+模型名称: BGE-large-zh | 维度: 1024 | 延迟(ms): 15 | 成本: 免费（本地） | 中文质量: 优秀
+模型名称: GTE-large-zh | 维度: 1024 | 延迟(ms): 18 | 成本: 免费（本地） | 中文质量: 优秀
+</div></div>
+<div><div class='meta'>表#2 (page 4)</div><table><tr><td>检索策略</td><td>Precision@5</td><td>Recall@10</td><td>NDCG@10</td><td>平均延迟(ms)</td></tr><tr><td>纯稠密检索</td><td>0.72</td><td>0.65</td><td>0.78</td><td>45</td></tr><tr><td>纯稀疏检索 (BM25)</td><td>0.68</td><td>0.71</td><td>0.73</td><td>28</td></tr><tr><td>混合检索 (RRF)</td><td>0.80</td><td>0.78</td><td>0.84</td><td>65</td></tr><tr><td>混合检索 + Cross-Encoder</td><td>0.85</td><td>0.82</td><td>0.88</td><td>89</td></tr><tr><td>混合检索 + LLM Rerank</td><td>0.83</td><td>0.80</td><td>0.87</td><td>320</td></tr></table><div class='plain'>纯文本: 检索策略: 纯稠密检索 | Precision@5: 0.72 | Recall@10: 0.65 | NDCG@10: 0.78 | 平均延迟(ms): 45
+检索策略: 纯稀疏检索 (BM25) | Precision@5: 0.68 | Recall@10: 0.71 | NDCG@10: 0.73 | 平均延迟(ms): 28
+检索策略: 混合检索 (RRF) | Precision@5: 0.80 | Recall@10: 0.78 | NDCG@10: 0.84 | 平均延迟(ms): 65
+检索策略: 混合检索 + Cross-Encoder | Precision@5: 0.85 | Recall@10: 0.82 | NDCG@10: 0.88 | 平均延迟(ms): 89
+检索策略: 混合检索 + LLM Rerank | Precision@5: 0.83 | Rec</div></div>
+<div><div class='meta'>表#3 (page 5)</div><table><tr><td>Chunk Size</td><td>Overlap</td><td>Chunk 数量</td><td>Hit Rate</td><td>MRR</td><td>备注</td></tr><tr><td>256</td><td>50</td><td>48</td><td>0.65</td><td>0.58</td><td>分块过小，上下文丢失</td></tr><tr><td>512</td><td>100</td><td>26</td><td>0.78</td><td>0.72</td><td>较好平衡</td></tr><tr><td>1000</td><td>200</td><td>14</td><td>0.82</td><td>0.76</td><td>推荐配置</td></tr><tr><td>1500</td><td>300</td><td>10</td><td>0.75</td><td>0.70</td><td>分块偏大，噪声增加</td></tr><tr><td>2000</td><td>400</td><td>8</td><td>0.68</td><td>0.62</td><td>分块过大，检索不精确</td></tr></table><div class='plain'>纯文本: Chunk Size: 256 | Overlap: 50 | Chunk 数量: 48 | Hit Rate: 0.65 | MRR: 0.58 | 备注: 分块过小，上下文丢失
+Chunk Size: 512 | Overlap: 100 | Chunk 数量: 26 | Hit Rate: 0.78 | MRR: 0.72 | 备注: 较好平衡
+Chunk Size: 1000 | Overlap: 200 | Chunk 数量: 14 | Hit Rate: 0.82 | MRR: 0.76 | 备注: 推荐配置
+Chunk Size: 1500 | Overlap: 300 | Chunk 数量: 10 | Hit Rate: 0.75 | MRR: 0.70 | 备注: 分块偏大，噪声增加
+Chunk Size: 2000 | Overlap: 400 | Chunk 数量: </div></div>
+<div><div class='meta'>表#4 (page 6)</div><table><tr><td>配置路径</td><td>推荐值</td><td>说明</td></tr><tr><td>llm.provider</td><td>azure</td><td>LLM 服务商</td></tr><tr><td>llm.model</td><td>gpt-4o</td><td>LLM 模型名</td></tr><tr><td>embedding.provider</td><td>azure</td><td>Embedding 服务商</td></tr><tr><td>embedding.model</td><td>text-embedding-ada-002</td><td>Embedding 模型</td></tr><tr><td>ingestion.chunk_size</td><td>1000</td><td>分块大小（字符）</td></tr><tr><td>ingestion.chunk_overlap</td><td>200</td><td>分块重叠（字符）</td></tr><tr><td>retrieval.dense_top_k</td><td>10</td><td>稠密检索 Top-K</td></tr><tr><td>retrieval.sparse_top_k</td><td>10</td><td>稀疏检索 Top-K</td></tr><tr><td>retrieval.rrf_k</td><td>60</td><td>RRF 平滑常数</td></tr><tr><td>rerank.provider</td><td>none</td><td>重排序方式</td></tr><tr><td>rerank.top_k</td><td>3</td><td>最终返回条数</td></tr></table><div class='plain'>纯文本: 配置路径: llm.provider | 推荐值: azure | 说明: LLM 服务商
+配置路径: llm.model | 推荐值: gpt-4o | 说明: LLM 模型名
+配置路径: embedding.provider | 推荐值: azure | 说明: Embedding 服务商
+配置路径: embedding.model | 推荐值: text-embedding-ada-002 | 说明: Embedding 模型
+配置路径: ingestion.chunk_size | 推荐值: 1000 | 说明: 分块大小（字符）
+配置路径: ingestion.chunk_overlap | 推荐值: 200 | 说明: 分块重叠（字符）
+配置路径: retrieval.dense_top_k | 推荐值: 10 | 说明: 稠密检索 Top-K
+配置路径: retrieval.</div></div>
+</body></html>
