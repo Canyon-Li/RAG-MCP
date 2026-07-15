@@ -101,7 +101,7 @@ ingestion:
   # Parser Configuration (K1) — pluggable document parser (renamed from loader).
   # Switching formats (pdf | pdf_text | docx | ...) is config-only via ParserFactory.
   parser:
-    provider: "pdf_table"  # K4′: native table extraction (pdfplumber) for table-heavy docs
+    provider: "docling"  # Docling (DocLayNet + TableFormer) layout + table extraction
     extract_images: true  # extract embedded images, insert [IMAGE: id] placeholders
 
   chunk_refiner:

@@ -439,6 +439,29 @@ class TestResponseBuilder:
         assert "> 项目: A | 数值: 100" in response.content
         assert "| --- |" not in response.content
 
+    def test_table_chunk_with_gfm_renders_as_is(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """Docling GFM table_html is rendered as-is, not treated as HTML."""
+        gfm = "| 模型 | 维度 |\n| --- | --- |\n| nomic | 768 |"
+        result = RetrievalResult(
+            chunk_id="doc_table_gfm",
+            score=0.9,
+            text=gfm,
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "table",
+                "table_html": gfm,  # GFM Markdown, not HTML (Docling path)
+            },
+        )
+        response = response_builder.build(results=[result], query="模型")
+
+        # GFM passes through unchanged (no HTML→GFM conversion).
+        assert "| 模型 | 维度 |" in response.content
+        assert "| nomic | 768 |" in response.content
+        assert "<table>" not in response.content
+
 
 # =============================================================================
 # Citation Dataclass Tests

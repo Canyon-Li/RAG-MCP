@@ -140,6 +140,7 @@ class ParserFactory:
         "pdf": [".pdf"],
         "pdf_text": [".pdf"],  # K3: alias of pdf
         "pdf_table": [".pdf"],  # K4′: native table extraction (pdfplumber)
+        "docling": [".pdf"],  # Docling (DocLayNet + TableFormer) layout + table
         "docx": [".docx"],
     }
 
@@ -186,6 +187,13 @@ def _register_builtin_providers() -> None:
         ParserFactory.register_provider("pdf_table", PdfTableParser)
     except ImportError:
         pass  # PdfTableParser (or pdfplumber) not available
+
+    try:
+        from src.libs.parser.docling_parser import DoclingParser
+
+        ParserFactory.register_provider("docling", DoclingParser)
+    except ImportError:
+        pass  # DoclingParser (or docling) not available
 
 
 # Register providers when module is imported
