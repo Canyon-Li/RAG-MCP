@@ -160,14 +160,11 @@ class CrossEncoderReranker(BaseReranker):
             pairs = self._prepare_pairs(query, candidates)
             
             # Score pairs using the model
-            scores = self._score_pairs(pairs, trace=trace)
+            scores = self._score_pairs(pairs)
             
             # Attach scores to candidates and sort
             reranked = self._attach_scores_and_sort(candidates, scores, top_k)
-            
-            if trace:
-                self._log_trace(trace, query, len(candidates), len(reranked))
-            
+
             return reranked
             
         except Exception as e:
@@ -203,13 +200,11 @@ class CrossEncoderReranker(BaseReranker):
     def _score_pairs(
         self,
         pairs: List[tuple[str, str]],
-        trace: Optional[Any] = None
     ) -> List[float]:
         """Score (query, passage) pairs using the Cross-Encoder model.
         
         Args:
             pairs: List of (query, passage) tuples.
-            trace: Optional TraceContext for observability.
         
         Returns:
             List of relevance scores (one per pair).
@@ -264,25 +259,3 @@ class CrossEncoderReranker(BaseReranker):
         )
         
         return sorted_candidates[:top_k]
-    
-    def _log_trace(
-        self,
-        trace: Any,
-        query: str,
-        input_count: int,
-        output_count: int
-    ) -> None:
-        """Log reranking operation to trace context.
-        
-        Args:
-            trace: TraceContext instance.
-            query: The query string.
-            input_count: Number of input candidates.
-            output_count: Number of output candidates.
-        """
-        # Placeholder for Stage F integration
-        # Future: trace.log_rerank_step(...)
-        logger.debug(
-            f"Cross-Encoder rerank: query='{query[:50]}...', "
-            f"input={input_count}, output={output_count}"
-        )
