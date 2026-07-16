@@ -159,7 +159,7 @@ class DoclingParser(BaseParser):
         self, path: Path, doc_hash: str
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Extract typed sections and images via Docling (+ PyMuPDF for images)."""
-        converter = DocumentConverter()
+        converter = self._build_converter()
         result = converter.convert(str(path))
         ddoc = result.document
 
@@ -188,6 +188,14 @@ class DoclingParser(BaseParser):
                         "html": None,
                     })
         return sections, images
+
+    def _build_converter(self) -> Any:
+        """Build the DocumentConverter (default: StandardPdfPipeline).
+
+        Hook for subclasses to swap the pipeline — e.g. ``DoclingVlmParser``
+        overrides this to use ``VlmPipeline`` backed by a remote VLM.
+        """
+        return DocumentConverter()
 
     def _item_to_section(
         self, item: Any, ddoc: Any
