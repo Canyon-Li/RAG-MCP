@@ -25,6 +25,7 @@ from src.core.response.response_builder import ResponseBuilder, MCPToolResponse
 from src.core.settings import load_settings, resolve_path, Settings
 from src.core.trace import TraceContext, TraceCollector
 from src.core.types import RetrievalResult
+from src.ingestion.storage.image_storage import ImageStorage
 
 if TYPE_CHECKING:
     from src.core.query_engine.hybrid_search import HybridSearch
@@ -124,8 +125,17 @@ class QueryKnowledgeHubTool:
         self._hybrid_search = hybrid_search
         self._reranker = reranker
         self._embedding_client = None
-        self._response_builder = response_builder or ResponseBuilder()
-        
+
+        # Cross-collection singleton ImageStorage (same DB as pipeline),
+        # for ResponseBuilder → MultimodalAssembler to look up images.
+        self._image_storage = ImageStorage(
+            db_path=str(resolve_path("data/db/image_index.db")),
+            images_root=str(resolve_path("data/images")),
+        )
+        self._response_builder = response_builder or ResponseBuilder(
+            image_storage=self._image_storage
+        )
+
         # Track initialization state
         self._initialized = False
         self._current_collection: Optional[str] = None

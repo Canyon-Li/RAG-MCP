@@ -154,14 +154,22 @@ class IngestionPipeline:
         self.chunker = DocumentChunker(settings)
         logger.info("  ✓ DocumentChunker initialized")
         
+        # ImageStorage must be ready before ImageCaptioner (stage 4c calls
+        # set_caption which is an UPDATE — rows must already exist).
+        self.image_storage = ImageStorage(
+            db_path=str(resolve_path("data/db/image_index.db")),
+            images_root=str(resolve_path("data/images"))
+        )
+        logger.info("  ✓ ImageStorage initialized")
+
         # Stage 4: Transforms
         self.chunk_refiner = ChunkRefiner(settings)
         logger.info(f"  ✓ ChunkRefiner initialized (use_llm={self.chunk_refiner.use_llm})")
-        
+
         self.metadata_enricher = MetadataEnricher(settings)
         logger.info(f"  ✓ MetadataEnricher initialized (use_llm={self.metadata_enricher.use_llm})")
-        
-        self.image_captioner = ImageCaptioner(settings)
+
+        self.image_captioner = ImageCaptioner(settings, image_storage=self.image_storage)
         has_vision = self.image_captioner.llm is not None
         logger.info(f"  ✓ ImageCaptioner initialized (vision_enabled={has_vision})")
         
@@ -187,13 +195,7 @@ class IngestionPipeline:
         
         self.bm25_indexer = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
         logger.info("  ✓ BM25Indexer initialized")
-        
-        self.image_storage = ImageStorage(
-            db_path=str(resolve_path("data/db/image_index.db")),
-            images_root=str(resolve_path("data/images"))
-        )
-        logger.info("  ✓ ImageStorage initialized")
-        
+
         logger.info("Pipeline initialization complete!")
     
     def run(
@@ -294,7 +296,26 @@ class IngestionPipeline:
                 if document.metadata.get("degraded"):
                     _load_payload["degraded"] = True
                 trace.record_stage("load", _load_payload, elapsed_ms=_elapsed)
-            
+
+            # ─────────────────────────────────────────────────────────────
+            # Stage 2.5: Register images (moved from 6c)
+            # Must complete before ImageCaptioner (stage 4c) which calls
+            # set_caption — rows must already exist or captions are lost.
+            # ─────────────────────────────────────────────────────────────
+            logger.info("\n🖼️  Stage 2.5: Image Storage Index")
+            images = document.metadata.get("images", [])
+            for img in images:
+                img_path = Path(img["path"])
+                if img_path.exists():
+                    self.image_storage.register_image(
+                        image_id=img["id"],
+                        file_path=img_path,
+                        collection=self.collection,
+                        doc_hash=file_hash,
+                        page_num=img.get("page", 0),
+                    )
+            logger.info(f"  Indexed {len(images)} images")
+
             # ─────────────────────────────────────────────────────────────
             # Stage 3: Chunking
             # ─────────────────────────────────────────────────────────────
@@ -467,27 +488,11 @@ class IngestionPipeline:
                 trace=trace,
             )
             logger.info(f"      Index built for {len(sparse_stats)} documents")
-            
-            # 6c: Register images in image storage index
-            # Note: Images are already saved by PdfLoader, we just need to index them
-            logger.info("  6c. Image Storage Index...")
-            images = document.metadata.get("images", [])
-            for img in images:
-                img_path = Path(img["path"])
-                if img_path.exists():
-                    self.image_storage.register_image(
-                        image_id=img["id"],
-                        file_path=img_path,
-                        collection=self.collection,
-                        doc_hash=file_hash,
-                        page_num=img.get("page", 0)
-                    )
-            logger.info(f"      Indexed {len(images)} images")
-            
+
             stages["storage"] = {
                 "vector_count": len(vector_ids),
                 "bm25_docs": len(sparse_stats),
-                "images_indexed": len(images)
+                "images_indexed": len(document.metadata.get("images", []))
             }
             _elapsed_storage = (time.monotonic() - _t0_storage) * 1000.0
             if trace is not None:
@@ -502,6 +507,7 @@ class IngestionPipeline:
                     for i, c in enumerate(chunks)
                 ]
                 # Image storage details
+                _images_for_trace = document.metadata.get("images", [])
                 image_storage_details = [
                     {
                         "image_id": img["id"],
@@ -509,7 +515,7 @@ class IngestionPipeline:
                         "page": img.get("page", 0),
                         "doc_hash": file_hash,
                     }
-                    for img in images
+                    for img in _images_for_trace
                 ]
                 trace.record_stage("upsert", {
                     "dense_store": {
@@ -526,7 +532,7 @@ class IngestionPipeline:
                     },
                     "image_store": {
                         "backend": "ImageStorage (JSON index)",
-                        "count": len(images),
+                        "count": len(_images_for_trace),
                         "images": image_storage_details,
                     },
                     "chunk_mapping": chunk_storage,
@@ -537,19 +543,20 @@ class IngestionPipeline:
             # ─────────────────────────────────────────────────────────────
             self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
             
+            _final_images = document.metadata.get("images", [])
             logger.info("\n" + "=" * 60)
             logger.info("✅ Pipeline completed successfully!")
             logger.info(f"   Chunks: {len(chunks)}")
             logger.info(f"   Vectors: {len(vector_ids)}")
-            logger.info(f"   Images: {len(images)}")
+            logger.info(f"   Images: {len(_final_images)}")
             logger.info("=" * 60)
-            
+
             return PipelineResult(
                 success=True,
                 file_path=str(file_path),
                 doc_id=file_hash,
                 chunk_count=len(chunks),
-                image_count=len(images),
+                image_count=len(_final_images),
                 vector_ids=vector_ids,
                 stages=stages
             )
