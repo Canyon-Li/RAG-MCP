@@ -170,6 +170,8 @@ class DocumentChunker:
                 chunk_metadata["bbox"] = rc["bbox"]
             if rc.get("table_html"):
                 chunk_metadata["table_html"] = rc["table_html"]
+            if rc.get("page") is not None:
+                chunk_metadata["page_num"] = rc["page"]
             chunks.append(Chunk(id=chunk_id, text=text, metadata=chunk_metadata))
         return chunks
 
@@ -259,6 +261,7 @@ class DocumentChunker:
     def _split_segment(self, seg: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Pass 2: split one merged segment into raw chunk dicts."""
         stype = seg["type"]
+        page = seg.get("page")
 
         if stype == "table":
             return self._split_table_segment(seg)
@@ -272,13 +275,14 @@ class DocumentChunker:
                     "section_type": "equation",
                     "table_html": None,
                     "bbox": seg.get("bbox"),
+                    "page": page,
                 }]
             return []
         # text-like (text / figure / figure_caption / unknown merged into text)
-        return self._split_text_like(seg["text"], "text", seg.get("bbox"))
+        return self._split_text_like(seg["text"], "text", seg.get("bbox"), page)
 
     def _split_text_like(
-        self, text: str, section_type: str, bbox: Any
+        self, text: str, section_type: str, bbox: Any, page: Any = None
     ) -> List[Dict[str, Any]]:
         """Recursive-split a text-like segment via the configured splitter."""
         if not text or not text.strip():
@@ -287,7 +291,8 @@ class DocumentChunker:
         if not fragments:
             fragments = [text]
         return [
-            {"text": f, "section_type": section_type, "table_html": None, "bbox": bbox}
+            {"text": f, "section_type": section_type, "table_html": None,
+             "bbox": bbox, "page": page}
             for f in fragments
             if f and f.strip()
         ]
@@ -314,6 +319,7 @@ class DocumentChunker:
                 "section_type": "table",
                 "table_html": html,
                 "bbox": bbox,
+                "page": seg.get("page"),
             }]
 
         # Oversized → split the plain text at \n row boundaries;
@@ -328,12 +334,14 @@ class DocumentChunker:
                 "section_type": "table",
                 "table_html": html if i == 0 else None,
                 "bbox": bbox,
+                "page": seg.get("page"),
             })
         return results or [{
             "text": plain,
             "section_type": "table",
             "table_html": html,
             "bbox": bbox,
+            "page": seg.get("page"),
         }]
 
     def _split_plain_rows(self, text: str, max_size: int) -> List[str]:
@@ -370,10 +378,12 @@ class DocumentChunker:
                 "section_type": "list",
                 "table_html": None,
                 "bbox": bbox,
+                "page": seg.get("page"),
             }]
         items = self._split_list_by_items(text, self._chunk_size) or [text]
         return [
-            {"text": c, "section_type": "list", "table_html": None, "bbox": bbox}
+            {"text": c, "section_type": "list", "table_html": None, "bbox": bbox,
+             "page": seg.get("page")}
             for c in items
             if c.strip()
         ]
@@ -424,41 +434,17 @@ class DocumentChunker:
     def _inherit_metadata(
         self, document: Document, chunk_index: int, chunk_text: str = ""
     ) -> dict:
-        """Inherit metadata from document and add chunk-specific fields.
+        """Inherit metadata from document and add chunk-level fields.
 
-        Copies document.metadata, drops document-level 'images' and 'sections'
-        (K2: sections is a parser intermediate, not chunk-level), adds chunk_index,
-        source_ref, and image_refs extracted from [IMAGE: id] placeholders.
+        图片相关的 images / image_captions / image_refs 不再写入 chunk
+        metadata（它们进 Chroma 会被标量化损坏；图片结构化数据统一由
+        ImageStorage 承载，查询端通过正文 [IMAGE: id] 占位符反查）。
+        page_num 由 section-aware 路径在 _split_by_sections 中按 section
+        page 透传，不再在此处从图片元数据推断。
         """
-        import re as _re
-
         chunk_metadata = document.metadata.copy()
-
-        doc_images = document.metadata.get("images", [])
-
-        # Drop document-level aggregates — chunk carries its own subset below.
         chunk_metadata.pop("images", None)
-        chunk_metadata.pop("sections", None)  # K2: parser intermediate, not chunk-level
-
+        chunk_metadata.pop("sections", None)  # parser intermediate
         chunk_metadata["chunk_index"] = chunk_index
         chunk_metadata["source_ref"] = document.id
-
-        # Extract image_refs from chunk text via [IMAGE: id] placeholders.
-        image_refs: List[str] = []
-        if chunk_text:
-            pattern = r"\[IMAGE:\s*([^\]]+)\]"
-            image_refs = [m.strip() for m in _re.findall(pattern, chunk_text)]
-        chunk_metadata["image_refs"] = image_refs
-
-        # Build chunk-specific 'images' list with full metadata for referenced images.
-        chunk_images: List[Dict[str, Any]] = []
-        if image_refs and doc_images:
-            image_lookup = {img.get("id"): img for img in doc_images}
-            for img_id in image_refs:
-                if img_id in image_lookup:
-                    chunk_images.append(image_lookup[img_id])
-        if chunk_images:
-            chunk_metadata["images"] = chunk_images
-            chunk_metadata["page_num"] = chunk_images[0].get("page")
-
         return chunk_metadata
