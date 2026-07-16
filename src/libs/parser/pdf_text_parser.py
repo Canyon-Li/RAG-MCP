@@ -11,8 +11,7 @@ Features:
 
 K1 (DEV_SPEC phase K): renamed from PdfLoader → PdfTextParser. This is the
 text-only tier of the PDF degradation chain (pdf_deep → pdf_text); parsing
-logic is unchanged, only the constructor contract was unified
-(see pdf改进计划.md §15.4).
+logic is unchanged, only the constructor contract was unified.
 """
 
 from __future__ import annotations

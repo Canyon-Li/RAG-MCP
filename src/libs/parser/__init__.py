@@ -8,7 +8,7 @@ Document parser components (K1, renamed from the loader package):
 
 Note: ``src/libs/loader/`` still hosts ``file_integrity`` (file IO utilities,
 not document parsing). The parser/ package is the pluggable document-parsing
-layer; see pdf改进计划.md for the architecture decision.
+layer.
 """
 
 from src.libs.parser.base_parser import BaseParser

@@ -276,8 +276,8 @@ class ResponseBuilder:
                 lines.append(f"**页码:** {citation.page}")
             
             # Content snippet — table chunks render as a Markdown table from
-            # metadata.table_html (pdf改进计划.md §15.1: plain text for embed,
-            # HTML for display); other chunks fall back to the plain-text snippet.
+            # metadata.table_html (plain text for embed, HTML for display); other
+            # chunks fall back to the plain-text snippet.
             table_md = self._render_table_snippet(result)
             if table_md:
                 lines.append(f"\n{table_md}\n")
@@ -352,21 +352,28 @@ class ResponseBuilder:
     def _render_table_snippet(self, result: RetrievalResult) -> Optional[str]:
         """Render a table chunk as a GFM Markdown table.
 
-        Tables carry two representations (pdf改进计划.md §15.1): ``chunk.text``
+        Tables carry two representations: ``chunk.text``
         is cleaned plain text ("列名: 值") used for embedding/BM25, while
         ``metadata.table_html`` keeps the original row/column structure for
-        display. This renders the HTML form so downstream LLMs/users see an
-        actual table instead of the flattened text used for retrieval.
+        display. The format of ``table_html`` depends on the parser:
+        pdfplumber-based ``PdfTableParser`` stores HTML; ``DoclingParser``
+        stores GFM Markdown directly. This renders HTML → GFM, and passes GFM
+        through unchanged, so both parsers render as an actual table.
 
-        Returns None when the result is not a table or its HTML can't be
-        parsed; the caller then falls back to the plain-text snippet.
+        Returns None when the result is not a table or has no table_html;
+        the caller then falls back to the plain-text snippet.
         """
         if result.metadata.get("section_type") != "table":
             return None
-        html = result.metadata.get("table_html")
-        if not html:
+        table_html = result.metadata.get("table_html")
+        if not table_html:
             return None
-        return self._html_table_to_markdown(html)
+        stripped = table_html.strip()
+        if stripped.startswith("<"):
+            # HTML form (pdfplumber PdfTableParser) → convert to GFM.
+            return self._html_table_to_markdown(table_html)
+        # Already GFM/Markdown (docling) → render as-is.
+        return stripped
 
     @staticmethod
     def _html_table_to_markdown(html: str) -> Optional[str]:

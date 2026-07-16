@@ -9,8 +9,7 @@ VectorStore/Reranker/Evaluator).
 K1 (DEV_SPEC phase K): renamed from LoaderFactory → ParserFactory. The
 constructor contract is unified: providers receive
 ``(settings, collection, image_storage_dir, extract_images=...)`` so the factory
-builds any parser the same way (aligns with the LLM/Embedding factory pattern,
-pdf改进计划.md §15.4). Backwards-compatible: when ``ingestion.parser`` is
+builds any parser the same way. Backwards-compatible: when ``ingestion.parser`` is
 absent it falls back to the legacy ``ingestion.loader`` block, then to the
 ``pdf`` provider default.
 """
@@ -140,6 +139,8 @@ class ParserFactory:
         "pdf": [".pdf"],
         "pdf_text": [".pdf"],  # K3: alias of pdf
         "pdf_table": [".pdf"],  # K4′: native table extraction (pdfplumber)
+        "docling": [".pdf"],  # Docling (DocLayNet + TableFormer) layout + table
+        "docling_vlm": [".pdf"],  # Docling VlmPipeline + Ollama Granite-Docling (C2)
         "docx": [".docx"],
     }
 
@@ -186,6 +187,20 @@ def _register_builtin_providers() -> None:
         ParserFactory.register_provider("pdf_table", PdfTableParser)
     except ImportError:
         pass  # PdfTableParser (or pdfplumber) not available
+
+    try:
+        from src.libs.parser.docling_parser import DoclingParser
+
+        ParserFactory.register_provider("docling", DoclingParser)
+    except ImportError:
+        pass  # DoclingParser (or docling) not available
+
+    try:
+        from src.libs.parser.docling_vlm_parser import DoclingVlmParser
+
+        ParserFactory.register_provider("docling_vlm", DoclingVlmParser)
+    except ImportError:
+        pass  # DoclingVlmParser (or docling) not available
 
 
 # Register providers when module is imported

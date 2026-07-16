@@ -129,7 +129,12 @@ class OllamaEmbedding(BaseEmbedding):
             }
             
             try:
-                with httpx.Client(timeout=self.timeout) as client:
+                # trust_env=False: Ollama runs locally — never route requests
+                # through an HTTP proxy. When a system proxy (clash/v2ray/...) is
+                # active and localhost isn't in its no_proxy list, the default
+                # trust_env=True yields a 502 from the proxy instead of hitting
+                # the Ollama server.
+                with httpx.Client(timeout=self.timeout, trust_env=False) as client:
                     response = client.post(url, json=payload)
                     response.raise_for_status()
                     

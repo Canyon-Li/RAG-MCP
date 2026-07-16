@@ -111,3 +111,4 @@ nonexistent_traces.jsonl/
 # Per-user / machine-local — not portable
 .mcp.json
 .claude/skills/auto-coder/.spec_hash
+表格选型.md

@@ -20,9 +20,9 @@ llm:
 # Embedding Configuration
 # =============================================================================
 embedding:
-  provider: "zhipu"
-  model: "embedding-3"
-  dimensions: 2048  # embedding-3 default; reported to vector store via get_dimension
+  provider: "ollama"  # local Ollama; base_url from $OLLAMA_BASE_URL (default http://localhost:11434)
+  model: "nomic-embed-text"
+  dimensions: 768  # nomic-embed-text output dim; reported to vector store via get_dimension
   azure_endpoint: ""
   deployment_name: ""
   api_version: ""
@@ -101,7 +101,7 @@ ingestion:
   # Parser Configuration (K1) — pluggable document parser (renamed from loader).
   # Switching formats (pdf | pdf_text | docx | ...) is config-only via ParserFactory.
   parser:
-    provider: "pdf_text"  # K3: text-only tier (pdf_deep → pdf_text); "pdf" alias also works
+    provider: "docling"  # Docling (DocLayNet + TableFormer) layout + table extraction
     extract_images: true  # extract embedded images, insert [IMAGE: id] placeholders
 
   chunk_refiner:

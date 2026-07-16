@@ -385,8 +385,82 @@ class TestResponseBuilder:
             query="test",
             collection="my_docs",
         )
-        
+
         assert "my_docs" in response.content
+
+    def test_table_chunk_renders_as_markdown_table(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """Table chunks render from metadata.table_html as a GFM table."""
+        result = RetrievalResult(
+            chunk_id="doc_table_001",
+            score=0.9,
+            text="项目: A | 数值: 100\n项目: B | 数值: 200",
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "table",
+                "table_html": (
+                    "<table>"
+                    "<tr><td>项目</td><td>数值</td></tr>"
+                    "<tr><td>A</td><td>100</td></tr>"
+                    "<tr><td>B</td><td>200</td></tr>"
+                    "</table>"
+                ),
+            },
+        )
+        response = response_builder.build(results=[result], query="报表")
+
+        # Header row, separator, and data rows come from the HTML structure.
+        assert "| 项目 | 数值 |" in response.content
+        assert "| --- | --- |" in response.content
+        assert "| A | 100 |" in response.content
+        assert "| B | 200 |" in response.content
+        # Plain-text snippet path ("> ...") must not be used for tables.
+        assert "> 项目: A" not in response.content
+
+    def test_table_chunk_without_html_falls_back_to_snippet(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """A table chunk missing table_html renders the plain-text snippet."""
+        result = RetrievalResult(
+            chunk_id="doc_table_002",
+            score=0.8,
+            text="项目: A | 数值: 100",
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "table",
+            },
+        )
+        response = response_builder.build(results=[result], query="报表")
+
+        # No table_html → plain-text snippet path.
+        assert "> 项目: A | 数值: 100" in response.content
+        assert "| --- |" not in response.content
+
+    def test_table_chunk_with_gfm_renders_as_is(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """Docling GFM table_html is rendered as-is, not treated as HTML."""
+        gfm = "| 模型 | 维度 |\n| --- | --- |\n| nomic | 768 |"
+        result = RetrievalResult(
+            chunk_id="doc_table_gfm",
+            score=0.9,
+            text=gfm,
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "table",
+                "table_html": gfm,  # GFM Markdown, not HTML (Docling path)
+            },
+        )
+        response = response_builder.build(results=[result], query="模型")
+
+        # GFM passes through unchanged (no HTML→GFM conversion).
+        assert "| 模型 | 维度 |" in response.content
+        assert "| nomic | 768 |" in response.content
+        assert "<table>" not in response.content
 
 
 # =============================================================================

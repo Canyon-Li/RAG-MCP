@@ -16,10 +16,10 @@ K2 (DEV_SPEC phase K): section-aware splitting. When a layout-aware parser
 (e.g. pdf_deep via the RAGFlow deepdoc sidecar) populates
 ``Document.metadata["sections"]``, the chunker respects type boundaries —
 tables are kept whole, titles merge into the following text, headers/footers
-are dropped, oversized tables split at row boundaries, lists at item boundaries
-(pdf改进计划.md §15.2). Table HTML is separated: ``chunk.text`` holds cleaned
-plain text for embedding while ``metadata.table_html`` keeps the original HTML
-for display (§15.1, §17.2 — table_html only on the first chunk when split).
+are dropped, oversized tables split at row boundaries, lists at item boundaries.
+Table HTML is separated: ``chunk.text`` holds cleaned plain text for embedding
+while ``metadata.table_html`` keeps the original HTML for display (table_html
+only on the first chunk when split).
 Documents without sections fall through to the original plain-text path,
 byte-for-byte unchanged.
 
@@ -51,7 +51,7 @@ class DocumentChunker:
     - Inherits and extends metadata
     - Maintains document traceability
     - K2: respects typed section boundaries when Document.metadata["sections"]
-      is present (pdf改进计划.md §15.2)
+      is present
 
     Attributes:
         _splitter: The underlying text splitter from libs layer
@@ -78,7 +78,7 @@ class DocumentChunker:
         """Split a Document into Chunks with full business enrichment.
 
         K2: when ``document.metadata["sections"]`` is present (layout-aware
-        parsing), split by section type boundaries (pdf改进计划.md §15.2);
+        parsing), split by section type boundaries;
         otherwise use the original plain-text path, byte-for-byte unchanged.
 
         Args:
@@ -132,7 +132,7 @@ class DocumentChunker:
         return chunks
 
     # ==================================================================
-    # K2: section-aware splitting (pdf改进计划.md §15.2)
+    # K2: section-aware splitting
     # ==================================================================
 
     def _split_by_sections(

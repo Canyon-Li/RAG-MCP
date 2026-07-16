@@ -13,7 +13,7 @@ Graceful Degradation:
 
 J2 (DEV_SPEC phase J). Registered as the ``docx`` provider in ParserFactory.
 K1 (DEV_SPEC phase K): renamed from WordLoader → WordParser; constructor
-contract unified (see pdf改进计划.md §15.4). Parsing logic unchanged.
+contract unified. Parsing logic unchanged.
 """
 
 from __future__ import annotations

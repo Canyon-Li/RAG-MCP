@@ -148,7 +148,6 @@ class Section:
     populate ``Document.metadata["sections"]`` with Section-like dicts. The
     DocumentChunker respects type boundaries when splitting — tables are kept
     whole, titles merge into adjacent text, headers/footers are dropped, etc.
-    See pdf改进计划.md §7.3 / §15.2.
 
     Note: when stored in ``Document.metadata["sections"]`` these are plain dicts
     (JSON-serializable); this dataclass exists for type clarity and test
@@ -158,7 +157,7 @@ class Section:
         - section_type: the source Section.type inherited by the chunk
         - bbox: the source Section.bbox (tables / figures)
         - table_html: original HTML for table chunks (display-grade); the chunk's
-          ``text`` holds cleaned plain text for embedding (pdf改进计划.md §15.1)
+          ``text`` holds cleaned plain text for embedding
 
     Attributes:
         type: Segment category — title | text | table | figure | figure_caption |

@@ -3,7 +3,7 @@
 Text-tier PDF parsing + table extraction using pdfplumber (pure algorithm, no
 models / no sidecar). For each page, text words (with bbox) and tables (with
 bbox) are emitted as sections ordered by vertical position, so tables land in
-their correct position in the text flow (pdf改进计划.md §7.4). Tables are
+their correct position in the text flow. Tables are
 serialized to both HTML (metadata.table_html, display) and cleaned plain text
 (chunk.text, embed) — §15.1. Falls back to PdfTextParser (MarkItDown) when
 pdfplumber raises (§7.7). "No tables" is NOT degradation — the parser still
