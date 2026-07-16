@@ -11,7 +11,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 from src.core.settings import Settings
 from src.core.types import Chunk
@@ -44,16 +44,18 @@ class ImageCaptioner(BaseTransform):
     """
     
     def __init__(
-        self, 
-        settings: Settings, 
-        llm: Optional[BaseVisionLLM] = None
+        self,
+        settings: Settings,
+        llm: Optional[BaseVisionLLM] = None,
+        image_storage: Optional[Any] = None,
     ):
         self.settings = settings
+        self.image_storage = image_storage
         self.llm = None
         # Caption cache: image_id -> caption string (thread-safe with lock)
         self._caption_cache: Dict[str, str] = {}
         self._cache_lock = threading.Lock()
-        
+
         # Check if vision LLM is enabled in settings
         if self.settings.vision_llm and self.settings.vision_llm.enabled:
              try:
@@ -64,7 +66,7 @@ class ImageCaptioner(BaseTransform):
                  # effectively falling back to no-op for this transform
         else:
              logger.warning("Vision LLM is disabled or not configured. ImageCaptioner will skip processing.")
-        
+
         self.prompt = self._load_prompt()
         
     def _load_prompt(self) -> str:
@@ -140,87 +142,76 @@ class ImageCaptioner(BaseTransform):
         chunks: List[Chunk],
         trace: Optional[TraceContext] = None
     ) -> List[Chunk]:
-        """Process chunks and add captions for referenced images.
-        
-        Only processes images that are actually referenced in chunk text
-        via [IMAGE: id] placeholders. Uses caching to avoid redundant API calls.
-        Parallel processing for unique images.
+        """Generate captions: resolve image paths via ImageStorage, call vision
+        LLM, write captions via set_caption, and stitch caption into chunk.text
+        so it stays searchable.
+
+        No longer writes chunk.metadata["image_captions"]. When image_storage
+        is not injected, paths cannot be resolved and captioning is skipped.
         """
         if not self.llm:
             return chunks
-        
-        # Build image lookup from all chunks' metadata
-        image_lookup: Dict[str, dict] = {}
-        for chunk in chunks:
-            if chunk.metadata and "images" in chunk.metadata:
-                for img_meta in chunk.metadata.get("images", []):
-                    img_id = img_meta.get("id")
-                    if img_id and img_id not in image_lookup:
-                        image_lookup[img_id] = img_meta
-        
-        logger.info(f"Found {len(image_lookup)} unique images in document")
-        
-        # Clear cache for new document processing
+
         with self._cache_lock:
             self._caption_cache.clear()
-        
-        # First pass: collect all unique image IDs that need captioning
-        images_to_caption: Dict[str, str] = {}  # img_id -> img_path
+
+        # Collect image_id -> file_path for all referenced images
+        images_to_caption: Dict[str, str] = {}
         for chunk in chunks:
-            referenced_ids = self._find_referenced_image_ids(chunk.text)
-            for img_id in referenced_ids:
-                if img_id not in images_to_caption:
-                    img_meta = image_lookup.get(img_id)
-                    if img_meta and img_meta.get("path"):
-                        images_to_caption[img_id] = img_meta.get("path")
-        
-        # Parallel caption generation for all unique images
+            for img_id in self._find_referenced_image_ids(chunk.text):
+                img_id = img_id.strip()
+                if img_id in images_to_caption:
+                    continue
+                file_path = self._resolve_image_path(img_id)
+                if file_path:
+                    images_to_caption[img_id] = file_path
+
         if images_to_caption:
             self._generate_captions_parallel(images_to_caption, trace)
-        
-        # Second pass: apply captions to chunks
-        processed_chunks = []
+
+        # Stitch captions into text + persist via set_caption
         total_captions_added = 0
-        
         for chunk in chunks:
             referenced_ids = self._find_referenced_image_ids(chunk.text)
-            
             if not referenced_ids:
-                processed_chunks.append(chunk)
                 continue
-            
             new_text = chunk.text
-            captions = []
-            
             for img_id in referenced_ids:
-                img_id_stripped = img_id.strip()
-                
-                # Get caption from cache (already populated by parallel processing)
+                img_id_s = img_id.strip()
                 with self._cache_lock:
-                    caption = self._caption_cache.get(img_id_stripped)
-                
-                if caption:
-                    captions.append({"id": img_id_stripped, "caption": caption})
-                    
-                    placeholder = f"[IMAGE: {img_id}]"
-                    replacement = f"[IMAGE: {img_id}]\n(Description: {caption})"
-                    new_text = new_text.replace(placeholder, replacement)
-                    total_captions_added += 1
-                    
+                    caption = self._caption_cache.get(img_id_s)
+                if not caption:
+                    continue
+                new_text = new_text.replace(
+                    f"[IMAGE: {img_id}]",
+                    f"[IMAGE: {img_id}]\n(Description: {caption})",
+                )
+                total_captions_added += 1
+                if self.image_storage is not None:
+                    self.image_storage.set_caption(img_id_s, caption)
             chunk.text = new_text
-            
-            if captions:
-                if "image_captions" not in chunk.metadata:
-                    chunk.metadata["image_captions"] = []
-                chunk.metadata["image_captions"].extend(captions)
-            
-            processed_chunks.append(chunk)
-        
+
         with self._cache_lock:
             api_calls = len(self._caption_cache)
         logger.info(f"Added {total_captions_added} captions, API calls: {api_calls}")
-            
-        return processed_chunks
+        return chunks
+
+    def _resolve_image_path(self, image_id: str) -> Optional[str]:
+        """Resolve an image's file path via ImageStorage.
+
+        Returns None when image_storage is not injected, when the image is
+        not registered, or when the file does not exist on disk.
+        """
+        if self.image_storage is None:
+            return None
+        try:
+            meta = self.image_storage.get_image_meta(image_id)
+        except Exception as e:
+            logger.warning(f"get_image_meta failed for {image_id}: {e}")
+            return None
+        if meta and meta.get("file_path") and Path(meta["file_path"]).exists():
+            return meta["file_path"]
+        return None
     
     def _generate_captions_parallel(
         self, 

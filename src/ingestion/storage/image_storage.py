@@ -10,11 +10,14 @@ Design Principles:
 - Organized: Images grouped by collection for namespace isolation
 """
 
+import logging
 import sqlite3
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Union
+from typing import Any, Optional, List, Dict, Union
+
+logger = logging.getLogger(__name__)
 
 
 class ImageStorage:
@@ -116,10 +119,16 @@ class ImageStorage:
                     collection TEXT,
                     doc_hash TEXT,
                     page_num INTEGER,
+                    caption TEXT,
                     created_at TEXT NOT NULL
                 )
             """)
-            
+
+            # 老库（无 caption 列）自动升级
+            existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(image_index)")}
+            if "caption" not in existing_cols:
+                conn.execute("ALTER TABLE image_index ADD COLUMN caption TEXT")
+
             # Create indexes for efficient queries
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_collection 
@@ -323,7 +332,61 @@ class ImageStorage:
             return result[0] if result else None
         finally:
             conn.close()
-    
+
+    def set_caption(
+        self,
+        image_id: str,
+        caption: str,
+        model: Optional[str] = None,
+    ) -> None:
+        """为已注册的图片写入 caption（幂等 UPDATE）。
+
+        若 image_id 未注册，UPDATE 命中 0 行，记一条 warning 后 no-op，
+        不抛异常（优雅降级）。
+
+        Args:
+            image_id: 已注册的图片 id。
+            caption: caption 文本。
+            model: 可选，生成 caption 的模型名（预留，当前不持久化）。
+        """
+        if not image_id or not image_id.strip():
+            raise ValueError("image_id cannot be empty")
+
+        conn = sqlite3.connect(self.db_path)
+        try:
+            cur = conn.execute(
+                "UPDATE image_index SET caption=? WHERE image_id=?",
+                (caption, image_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                logger.warning(
+                    f"set_caption: no row for image_id='{image_id}' "
+                    "(not registered yet?)"
+                )
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Failed to set caption for {image_id}: {e}") from e
+        finally:
+            conn.close()
+
+    def get_image_meta(self, image_id: str) -> Optional[Dict[str, Any]]:
+        """一次取回图片全部字段；查不到返回 None。
+
+        Returns:
+            {image_id, file_path, collection, doc_hash, page_num, caption,
+             created_at} 或 None。
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            cur = conn.execute(
+                "SELECT * FROM image_index WHERE image_id=?", (image_id,)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            conn.close()
+
     def image_exists(self, image_id: str) -> bool:
         """Check if image exists in database.
         

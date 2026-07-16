@@ -123,9 +123,10 @@ class ResponseBuilder:
         max_results_in_content: int = 5,
         snippet_max_length: int = 300,
         enable_multimodal: bool = True,
+        image_storage: Optional[Any] = None,
     ) -> None:
         """Initialize ResponseBuilder.
-        
+
         Args:
             citation_generator: Optional CitationGenerator instance.
                 If None, creates a default one.
@@ -134,12 +135,17 @@ class ResponseBuilder:
             max_results_in_content: Maximum results to show in Markdown content.
             snippet_max_length: Maximum characters per result snippet in content.
             enable_multimodal: Whether to include images in response (default: True).
+            image_storage: Optional ImageStorage instance forwarded to the
+                lazily-created MultimodalAssembler so it can resolve image
+                references. Ignored when ``multimodal_assembler`` is supplied
+                directly. Defaults to None (no image resolution).
         """
         self.citation_generator = citation_generator or CitationGenerator()
         self.max_results_in_content = max_results_in_content
         self.snippet_max_length = snippet_max_length
         self.enable_multimodal = enable_multimodal
-        
+        self._image_storage = image_storage
+
         # Lazy-load multimodal assembler to avoid circular imports
         self._multimodal_assembler = multimodal_assembler
     
@@ -148,7 +154,9 @@ class ResponseBuilder:
         """Get or create MultimodalAssembler instance."""
         if self._multimodal_assembler is None:
             from src.core.response.multimodal_assembler import MultimodalAssembler
-            self._multimodal_assembler = MultimodalAssembler()
+            self._multimodal_assembler = MultimodalAssembler(
+                image_storage=self._image_storage
+            )
         return self._multimodal_assembler
     
     def build(
