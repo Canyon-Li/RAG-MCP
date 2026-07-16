@@ -264,9 +264,9 @@ class DocumentChunker:
         page = seg.get("page")
 
         if stype == "table":
-            return self._split_table_segment(seg)
+            return self._split_table_segment(seg, page)
         if stype == "list":
-            return self._split_list_segment(seg)
+            return self._split_list_segment(seg, page)
         if stype == "equation":
             text = seg["text"]
             if text and text.strip():
@@ -297,7 +297,9 @@ class DocumentChunker:
             if f and f.strip()
         ]
 
-    def _split_table_segment(self, seg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _split_table_segment(
+        self, seg: Dict[str, Any], page: Any = None
+    ) -> List[Dict[str, Any]]:
         """Split a table segment: whole if ≤ 2×chunk_size, else plain-text rows.
 
         K2b (§7.5/§14.1): the Chunker only *carries* the Parser's already-cleaned
@@ -319,7 +321,7 @@ class DocumentChunker:
                 "section_type": "table",
                 "table_html": html,
                 "bbox": bbox,
-                "page": seg.get("page"),
+                "page": page,
             }]
 
         # Oversized → split the plain text at \n row boundaries;
@@ -334,14 +336,14 @@ class DocumentChunker:
                 "section_type": "table",
                 "table_html": html if i == 0 else None,
                 "bbox": bbox,
-                "page": seg.get("page"),
+                "page": page,
             })
         return results or [{
             "text": plain,
             "section_type": "table",
             "table_html": html,
             "bbox": bbox,
-            "page": seg.get("page"),
+            "page": page,
         }]
 
     def _split_plain_rows(self, text: str, max_size: int) -> List[str]:
@@ -366,7 +368,9 @@ class DocumentChunker:
             chunks.append("\n".join(current))
         return chunks
 
-    def _split_list_segment(self, seg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _split_list_segment(
+        self, seg: Dict[str, Any], page: Any = None
+    ) -> List[Dict[str, Any]]:
         """Split a list segment: whole if ≤ chunk_size, else item boundaries."""
         text = seg["text"]
         bbox = seg.get("bbox")
@@ -378,12 +382,12 @@ class DocumentChunker:
                 "section_type": "list",
                 "table_html": None,
                 "bbox": bbox,
-                "page": seg.get("page"),
+                "page": page,
             }]
         items = self._split_list_by_items(text, self._chunk_size) or [text]
         return [
             {"text": c, "section_type": "list", "table_html": None, "bbox": bbox,
-             "page": seg.get("page")}
+             "page": page}
             for c in items
             if c.strip()
         ]
@@ -444,6 +448,8 @@ class DocumentChunker:
         """
         chunk_metadata = document.metadata.copy()
         chunk_metadata.pop("images", None)
+        chunk_metadata.pop("image_captions", None)
+        chunk_metadata.pop("image_refs", None)
         chunk_metadata.pop("sections", None)  # parser intermediate
         chunk_metadata["chunk_index"] = chunk_index
         chunk_metadata["source_ref"] = document.id
