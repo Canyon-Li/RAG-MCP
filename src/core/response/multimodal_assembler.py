@@ -163,52 +163,43 @@ class MultimodalAssembler:
         result: RetrievalResult,
     ) -> List[ImageReference]:
         """Extract image references from a retrieval result.
-        
-        Looks for image references in:
-        1. metadata.images list (structured image info)
-        2. [IMAGE: id] placeholders in text (fallback)
-        
-        Args:
-            result: RetrievalResult containing chunk data.
-            
-        Returns:
-            List of ImageReference objects found in the result.
+
+        单一数据源：从 result.text 解析 [IMAGE: id] 占位符，再用
+        ImageStorage.get_image_meta 一次取回 {file_path, page_num, caption}。
+        不再读取 metadata.images / metadata.image_captions（它们不再写入
+        chunk metadata）。
         """
         refs: List[ImageReference] = []
-        metadata = result.metadata or {}
-        
-        # Primary source: structured images list in metadata
-        images_list = metadata.get("images", [])
-        if isinstance(images_list, list):
-            for img_info in images_list[:self.max_images_per_result]:
-                if isinstance(img_info, dict) and "id" in img_info:
-                    ref = ImageReference(
-                        image_id=img_info["id"],
-                        file_path=img_info.get("path"),
-                        page=img_info.get("page"),
-                        text_offset=img_info.get("text_offset"),
-                        text_length=img_info.get("text_length"),
-                    )
-                    refs.append(ref)
-        
-        # Add captions if available
-        captions = metadata.get("image_captions", {})
-        if isinstance(captions, dict):
-            for ref in refs:
-                if ref.image_id in captions:
-                    ref.caption = captions[ref.image_id]
-        
-        # Fallback: parse placeholders from text if no structured refs
-        if not refs and result.text:
-            placeholders = IMAGE_PLACEHOLDER_PATTERN.findall(result.text)
-            for image_id in placeholders[:self.max_images_per_result]:
-                image_id = image_id.strip()
-                ref = ImageReference(
+        if not result.text:
+            return refs
+
+        seen: set = set()
+        for image_id in IMAGE_PLACEHOLDER_PATTERN.findall(result.text):
+            image_id = image_id.strip()
+            if not image_id or image_id in seen:
+                continue
+            if len(refs) >= self.max_images_per_result:
+                break
+            seen.add(image_id)
+
+            meta = None
+            if self._image_storage is not None:
+                try:
+                    meta = self._image_storage.get_image_meta(image_id)
+                except Exception as e:
+                    logger.warning(f"get_image_meta failed for {image_id}: {e}")
+                    meta = None
+
+            if meta:
+                refs.append(ImageReference(
                     image_id=image_id,
-                    caption=captions.get(image_id) if isinstance(captions, dict) else None,
-                )
-                refs.append(ref)
-        
+                    file_path=meta.get("file_path"),
+                    page=meta.get("page_num"),
+                    caption=meta.get("caption"),
+                ))
+            else:
+                # 查不到也保留 ref，交给 resolve_image_path 兜底
+                refs.append(ImageReference(image_id=image_id))
         return refs
     
     def resolve_image_path(
@@ -217,21 +208,14 @@ class MultimodalAssembler:
         collection: Optional[str] = None,
     ) -> Optional[str]:
         """Resolve the filesystem path for an image reference.
-        
-        Args:
-            ref: ImageReference to resolve.
-            collection: Optional collection name for path construction.
-            
-        Returns:
-            Absolute file path if found, None otherwise.
+
+        两步：(1) 用 ref.file_path（来自 ImageStorage，绝对路径）直查；
+        (2) ImageStorage 回查兜底。约定路径兜底已删除（实际存放路径含
+        {doc_hash} 段，约定路径无法命中）。
         """
-        # Use explicit path if available
-        if ref.file_path:
-            path = Path(ref.file_path)
-            if path.exists():
-                return str(path.resolve())
-        
-        # Try ImageStorage lookup
+        if ref.file_path and Path(ref.file_path).exists():
+            return str(Path(ref.file_path).resolve())
+
         if self._image_storage is not None:
             try:
                 path = self._image_storage.get_image_path(ref.image_id)
@@ -239,15 +223,7 @@ class MultimodalAssembler:
                     return path
             except Exception as e:
                 logger.warning(f"ImageStorage lookup failed for {ref.image_id}: {e}")
-        
-        # Convention-based path: data/images/{collection}/{image_id}.png
-        if collection:
-            from src.core.settings import resolve_path
-            for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                candidate = resolve_path(f"data/images/{collection}/{ref.image_id}{ext}")
-                if candidate.exists():
-                    return str(candidate.resolve())
-        
+
         return None
     
     def load_image(
