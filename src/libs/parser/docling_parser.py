@@ -4,8 +4,7 @@ Docling (DocLayNet layout detection + TableFormer table-structure recognition)
 parses the PDF into typed items (title / text / table / picture / caption) and
 returns tables directly as GFM Markdown. This parser maps Docling's item stream
 into the same typed-section contract as ``PdfTableParser`` so the
-``DocumentChunker`` section-aware splitter reuses unchanged (pdf改进计划.md §7.3,
-§15.2).
+``DocumentChunker`` section-aware splitter reuses unchanged.
 
 Table representation differs from PdfTableParser: Docling yields GFM Markdown
 (not HTML), so both ``section.text`` and ``section.html`` carry the GFM form.

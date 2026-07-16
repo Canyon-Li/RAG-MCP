@@ -14,7 +14,7 @@ K1 (DEV_SPEC phase K): renamed from BaseLoader → BaseParser as part of the
 parser-centric architecture (RAGFlow deepdoc 移植). The constructor contract is
 unified to ``__init__(self, settings, collection, image_storage_dir, **kwargs)``
 so ``ParserFactory`` can build any provider uniformly (aligns with the
-LLM/Embedding factory pattern). See pdf改进计划.md §15.4.
+LLM/Embedding factory pattern).
 """
 
 from __future__ import annotations

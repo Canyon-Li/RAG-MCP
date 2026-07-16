@@ -276,8 +276,8 @@ class ResponseBuilder:
                 lines.append(f"**页码:** {citation.page}")
             
             # Content snippet — table chunks render as a Markdown table from
-            # metadata.table_html (pdf改进计划.md §15.1: plain text for embed,
-            # HTML for display); other chunks fall back to the plain-text snippet.
+            # metadata.table_html (plain text for embed, HTML for display); other
+            # chunks fall back to the plain-text snippet.
             table_md = self._render_table_snippet(result)
             if table_md:
                 lines.append(f"\n{table_md}\n")
@@ -352,7 +352,7 @@ class ResponseBuilder:
     def _render_table_snippet(self, result: RetrievalResult) -> Optional[str]:
         """Render a table chunk as a GFM Markdown table.
 
-        Tables carry two representations (pdf改进计划.md §15.1): ``chunk.text``
+        Tables carry two representations: ``chunk.text``
         is cleaned plain text ("列名: 值") used for embedding/BM25, while
         ``metadata.table_html`` keeps the original row/column structure for
         display. The format of ``table_html`` depends on the parser:

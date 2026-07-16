@@ -1,6 +1,6 @@
 """Unit tests for DocumentChunker K2 section-aware splitting.
 
-Validates the section-aware path (pdf改进计划.md §15.2 / §15.1 / §17.2):
+Validates the section-aware path:
 - tables kept whole with chunk.text = cleaned plain text + metadata.table_html
 - oversized tables split at row boundaries (table_html only on the first chunk)
 - titles merge into the following text run

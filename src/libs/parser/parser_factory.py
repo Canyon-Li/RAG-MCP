@@ -9,8 +9,7 @@ VectorStore/Reranker/Evaluator).
 K1 (DEV_SPEC phase K): renamed from LoaderFactory → ParserFactory. The
 constructor contract is unified: providers receive
 ``(settings, collection, image_storage_dir, extract_images=...)`` so the factory
-builds any parser the same way (aligns with the LLM/Embedding factory pattern,
-pdf改进计划.md §15.4). Backwards-compatible: when ``ingestion.parser`` is
+builds any parser the same way. Backwards-compatible: when ``ingestion.parser`` is
 absent it falls back to the legacy ``ingestion.loader`` block, then to the
 ``pdf`` provider default.
 """
