@@ -221,7 +221,8 @@ class TestFigureCaption:
         assert len(chunks) == 3
         fig_chunks = [c for c in chunks if "[IMAGE:" in c.text]
         assert len(fig_chunks) == 1
-        assert "img_001" in fig_chunks[0].metadata["image_refs"]
+        assert "img_001" in fig_chunks[0].text
+        assert "image_refs" not in fig_chunks[0].metadata
 
 
 # =============================================================================

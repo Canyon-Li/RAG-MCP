@@ -436,11 +436,11 @@ class DocumentChunker:
     ) -> dict:
         """Inherit metadata from document and add chunk-level fields.
 
-        图片相关的 images / image_captions / image_refs 不再写入 chunk
-        metadata（它们进 Chroma 会被标量化损坏；图片结构化数据统一由
-        ImageStorage 承载，查询端通过正文 [IMAGE: id] 占位符反查）。
-        page_num 由 section-aware 路径在 _split_by_sections 中按 section
-        page 透传，不再在此处从图片元数据推断。
+        Image-related fields (images / image_captions / image_refs) are no
+        longer written to chunk metadata: Chroma's _sanitize_metadata corrupts
+        those list/dict structures into strings, and image data now lives in
+        ImageStorage SQLite. page_num is set by the section-aware path
+        (_split_by_sections) from the source section's page, not inferred here.
         """
         chunk_metadata = document.metadata.copy()
         chunk_metadata.pop("images", None)
