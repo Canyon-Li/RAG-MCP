@@ -15,6 +15,7 @@ from src.libs.llm.openai_llm import OpenAILLM, OpenAILLMError
 from src.libs.llm.openai_vision_llm import OpenAIVisionLLM, OpenAIVisionLLMError
 from src.libs.llm.azure_llm import AzureLLM, AzureLLMError
 from src.libs.llm.azure_vision_llm import AzureVisionLLM, AzureVisionLLMError
+from src.libs.llm.ollama_vision_llm import OllamaVisionLLM, OllamaVisionLLMError
 from src.libs.llm.deepseek_llm import DeepSeekLLM, DeepSeekLLMError
 from src.libs.llm.ollama_llm import OllamaLLM, OllamaLLMError
 from src.libs.llm.qwen_llm import QwenLLM, QwenLLMError
@@ -58,4 +59,6 @@ __all__ = [
     "OpenAIVisionLLMError",
     "AzureVisionLLM",
     "AzureVisionLLMError",
+    "OllamaVisionLLM",
+    "OllamaVisionLLMError",
 ]

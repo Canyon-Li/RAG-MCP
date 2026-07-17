@@ -30,17 +30,17 @@ embedding:
   base_url: "https://open.bigmodel.cn/api/paas/v4"
 
 # =============================================================================
-# Vision LLM Configuration (disabled per user choice)
+# Vision LLM Configuration (Ollama local)
 # =============================================================================
 vision_llm:
-  enabled: false
-  provider: "qwen"
-  model: "qwen-vl-max"
+  enabled: true
+  provider: "ollama"
+  model: "llava-phi3:3.8b"
   azure_endpoint: ""
   deployment_name: ""
   api_version: ""
   api_key: ""
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  base_url: "http://localhost:11434/v1"
   max_image_size: 2048
 
 # =============================================================================
