@@ -26,10 +26,12 @@
 | D-012 | 2026-07-16 | docling_vlm：放弃 ollama 远程，走本地 transformers | 采纳 | 4f0c7e2 |
 | D-013 | 2026-07-15 | 默认 LLM 切 Zhipu glm-4-flash | 采纳 | b80907c |
 | D-014 | 2026-07-15 | embedding 切本地 ollama + httpx trust_env=False | 采纳 | 14318b8 |
-| D-015 | 2026-07-15 | vision_llm 默认 disabled | 采纳 | [settings.yaml](config/settings.yaml#L35) |
+| D-015 | 2026-07-15 | vision_llm 默认 disabled | 已被 D-020 取代 | [settings.yaml](config/settings.yaml#L35) |
 | D-016 | 2026-07 | 运行环境用 conda，不建 .venv | 采纳 | memory: runtime-env-conda |
 | D-017 | — | evaluator / cross_encoder 框架已搭但未完整测试 | 待决 | [evaluator/](src/libs/evaluator/) |
 | D-018 | 2026-07-16 | 图片结构化数据从 Chroma metadata 彻底解耦到 ImageStorage SQLite | 采纳 | refactor/pdf-image-retrieval |
+| D-019 | 2026-07-21 | docling 图片抽取从 get_images 改为 bbox 区域渲染（矢量图支持） | 采纳 | feat/docling-figure-render |
+| D-020 | 2026-07-21 | vision_llm 切本地 ollama（llava-phi3）并默认启用 | 采纳 | 9905e3f |
 
 ---
 
@@ -46,7 +48,7 @@
 - **备选**：① CLIP 跨模态向量（图文共享向量空间）；② Vision LLM 把图描述成文字，缝进 chunk。
 - **决策**：选 ②。图片 → Vision LLM 生成 caption → 文本缝进 chunk body → 复用纯文本检索链路。
 - **理由**：复用现成 dense+sparse 链路，不引入第二套向量索引；caption 本身可被关键词命中。
-- **代价**：检索质量受 caption 质量上限限制；当前 vision_llm disabled，退化为 `[IMAGE: id]` 占位（见 D-015）。
+- **代价**：检索质量受 caption 质量上限限制；vision_llm 已在 D-020 默认启用（本地 ollama）。
 
 ### D-004 MCP stdio stdout 严格 + preload chromedb
 - **背景**：MCP stdio transport 把 stdout 留给 JSON-RPC，任何日志打到 stdout 都会污染协议流；另外 MCP SDK 用 anyio 后台线程做 I/O，工具 handler 在 `asyncio.to_thread` 里 `import chromedb` 会和 stdin-reader 线程抢 Python import lock → 死锁。
@@ -116,7 +118,30 @@
 - **决策**：选 C。`[IMAGE: id]` 占位符是查询端反查图片的唯一线索；在 `image_index` 表加 `caption` 列（PRAGMA-based ALTER TABLE），`set_caption`/`get_image_meta` 统一读写；图片注册从 pipeline stage 6c 前移到 stage 2.5（parse 后立即注册）。
 - **理由**：从根因消除有损标量化，G2 被结构性消掉（caption 不进 Chroma）；图片注册前移保证 `set_caption` 时行已存在；`[IMAGE: id]` 占位符作为唯一 key 比 metadata 里藏一份副本更可靠。选 C 而非 A 是因为 JSON 序列化仍绕不开 Chroma 的 metadata 长度限制和查询端反序列化。
 - **代价 / 现状**：已合入 main（PR #3，8 commits，`refactor/pdf-image-retrieval` 分支）。G1/G2/G3 全部修复，含 6 个新单元测试 + 集成测试，端到端验证通过。历史 ingest 数据需重新摄取（已有幂等性，不受影响）。关联 memory: image-extraction-raster-only。
-- **后续**：vision LLM caption 生成当前仍 disabled（D-015），结构化 caption 链路已通，开启即用。G4–G7 留待后续。
+- **后续**：vision LLM caption 生成已随 D-020 默认启用（本地 ollama / llava-phi3）。G4–G7 留待后续。
+
+---
+
+## D. 图片抽取演进（2026-07-21）
+
+### D-019 docling 图片抽取从 get_images 改为 bbox 区域渲染（get_pixmap）
+- **状态**：采纳。
+- **背景**：D-018 把图片结构化解耦到 ImageStorage 后，存取闭环通了，但底层抽取仍是 PyMuPDF `page.get_images(full=True)`——只查 PDF 图对象树，矢量图（matplotlib 图表、流程图、量子电路图）不是图对象，完全捕获不到。实测一篇全矢量的量子计算论文 `images=0`。关联 memory: image-extraction-raster-only。
+- **备选**：A = 混合保留（get_images 抽光栅 + 仅对未覆盖区域 bbox 渲染，去重判断复杂）；B = **全部走 bbox 渲染**（丢掉 get_images，Docling 识别到的每个 Figure 区域都 `get_pixmap(clip=bbox)`）；C = 加 `image_strategy` 配置开关让用户选。
+- **决策**：选 B。Docling 版面分析已经给出每个 Figure 的 bbox，一个 `get_pixmap(clip=bbox)` 把光栅图和矢量图一并解决，代码大幅简化。只改 docling_parser；pdf_text / pdf_table 无版面分析能力，保持 get_images 不变。
+- **理由**：论文场景下矢量图是主流；Docling 已经做了版面分析，bbox 白拿；光栅图本来就是渲染产物，再渲染一次损失可忽略（DPI=200）。选 B 而非 A 是因为去重判断（bbox 是否已被光栅图覆盖）收益不大却显著增复杂度。
+- **代价 / 现状**：PR #4（`feat/docling-figure-render`）。`RENDER_DPI=200` / `MIN_FIGURE_SIZE=50pt` 硬编码类常量（将来需要再加配置）。14 个单元测试覆盖渲染/过滤/降级路径。
+- **踩坑（坐标系）**：Docling `prov.bbox` 用 PDF **bottom-left origin**（`t > b`），PyMuPDF `fitz.Rect` 用 **top-left origin**。初版代码 `height = b - t` 算出负数 → 所有真实图被 MIN_FIGURE_SIZE 误过滤（实测 0 张产出）；即使过了过滤，Rect 没翻转 y 轴渲染区域也是错的。修复：`height = abs(b - t)`；Rect 用 `page_height - y` 翻转。**真实 PDF 端到端验证才发现**——单元测试全 mock 了 `fitz.Rect`，坐标系假设没被覆盖。教训：坐标系这类底层假设必须有真实数据验证，不能停在 mock 层。
+- **关联**：5400034；spec [docs/superpowers/specs/2026-07-21-docling-figure-render-design.md](docs/superpowers/specs/2026-07-21-docling-figure-render-design.md)；memory: image-extraction-raster-only。
+
+### D-020 vision_llm 切本地 ollama（llava-phi3）并默认启用
+- **状态**：采纳（取代 D-015 的"默认 disabled"）。
+- **背景**：D-015 默认关闭 vision_llm 的理由是"需要云端 API key"。现在本地有 Ollama + llava-phi3:3.8b，无需 key、无外部依赖，D-015 的前提不再成立。D-018 的 caption 链路也要求 vision_llm 开启才能真正生成描述。
+- **备选**：A = 继续 disabled，用户手动开；B = **默认启用本地 ollama**；C = 默认启用但走云端（azure/openai）。
+- **决策**：选 B。新增 `OllamaVisionLLM`（继承 `OpenAIVisionLLM`，复用 OpenAI 兼容的 `/v1/chat/completions` 消息格式），覆盖初始化（API key 占位、base_url 默认 `http://localhost:11434/v1`）和 HTTP 客户端（`trust_env=False` 绕系统代理，同 D-014）。settings.yaml 切到 `provider: ollama`、`enabled: true`。
+- **理由**：本地模型零成本、无 key、隐私友好；Ollama 的 `/v1` 端点完全 OpenAI 兼容，继承父类省掉图片处理逻辑；`trust_env=False` 是 D-014 已验证的本地服务调用必备（系统代理会拦 localhost）。选 B 而非 C 是因为本项目定位是学习/面试，本地优先。
+- **代价 / 现状**：llava-phi3:3.8b 是小模型，复杂科学图描述质量有限（能用但不惊艳）；如需更强可换 llava-llama3 或走云端。已合入 main（`9905e3f`）。
+- **关联**：9905e3f；[ollama_vision_llm.py](src/libs/llm/ollama_vision_llm.py)；memory: system-proxy-intercepts-localhost。
 
 ---
 
