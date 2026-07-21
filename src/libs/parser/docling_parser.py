@@ -77,7 +77,10 @@ class DoclingParser(BaseParser):
     # Region rendering for figure extraction (replaces get_images).
     # get_pixmap(clip=bbox) captures both raster and vector content.
     RENDER_DPI = 200  # Resolution for bbox rendering (clarity vs storage tradeoff)
-    MIN_FIGURE_SIZE = 100  # Skip figures < 100pt in either dim (filters logos/decorations)
+    # Filters logos / page-header bands / decorative elements Docling may label
+    # as PICTURE. 50pt ≈ 1.76 cm — low enough to keep small paper figures (a
+    # 99pt-tall circuit diagram is real), high enough to drop true micro-noise.
+    MIN_FIGURE_SIZE = 50
 
     def __init__(
         self,
@@ -191,7 +194,10 @@ class DoclingParser(BaseParser):
             return None
 
         width = bbox["x1"] - bbox["x0"]
-        height = bbox["bottom"] - bbox["top"]
+        # Docling's prov.bbox uses PDF bottom-left origin (t > b), so
+        # (bottom - top) is negative — take abs() or every real figure gets
+        # silently filtered as "too small".
+        height = abs(bbox["bottom"] - bbox["top"])
         if width < self.MIN_FIGURE_SIZE or height < self.MIN_FIGURE_SIZE:
             logger.debug(
                 f"Skip small figure on page {page_num}: {width:.0f}x{height:.0f}pt"
@@ -200,7 +206,15 @@ class DoclingParser(BaseParser):
 
         try:
             page = fitz_doc[page_num - 1]
-            rect = fitz.Rect(bbox["x0"], bbox["top"], bbox["x1"], bbox["bottom"])
+            # Flip y-axis: Docling is bottom-left origin, PyMuPDF Rect is
+            # top-left origin. PyMuPDF_y = page_height - Docling_y.
+            page_height = page.rect.height
+            rect = fitz.Rect(
+                bbox["x0"],
+                page_height - bbox["top"],
+                bbox["x1"],
+                page_height - bbox["bottom"],
+            )
             pix = page.get_pixmap(clip=rect, dpi=self.RENDER_DPI)
 
             image_id = self._generate_image_id(doc_hash, page_num, fig_index + 1)

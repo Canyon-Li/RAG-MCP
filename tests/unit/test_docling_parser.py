@@ -205,6 +205,40 @@ def test_render_figure_region_renders_valid_bbox(settings, tmp_path):
     pix.save.assert_called_once()
 
 
+def test_render_figure_region_flips_y_axis_for_docling_bbox(settings, tmp_path):
+    """Docling's prov.bbox uses PDF bottom-left origin (t > b); the size filter
+    must take abs() and the PyMuPDF Rect must flip y via page height.
+
+    Real values from a quantum-circuit paper (page 3, A4): l=191.6 t=339.5
+    r=404.4 b=232.5 — height (b-t) is -107, so without abs() this is silently
+    filtered as "too small", and without the y-flip the rendered region is wrong.
+    """
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    page.rect = MagicMock(height=841.9)  # A4 page height in points
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    # Docling bottom-left origin: t=339.5 > b=232.5 (visual height = t-b = 107pt)
+    item = _make_item("PICTURE", page=3, bbox=(191.6, 339.5, 404.4, 232.5))
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect") as mock_rect:
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    # NOT filtered despite negative (b - t)
+    assert img is not None
+    # y-axis flipped via page height: Rect(l, page_h - t, r, page_h - b)
+    mock_rect.assert_called_once_with(191.6, 841.9 - 339.5, 404.4, 841.9 - 232.5)
+    page.get_pixmap.assert_called_once()
+
+
 def test_render_figure_region_skips_small_bbox(settings, tmp_path):
     """Figure smaller than MIN_FIGURE_SIZE in either dimension is skipped."""
     parser = DoclingParser(
