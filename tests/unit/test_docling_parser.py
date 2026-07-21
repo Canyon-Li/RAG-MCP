@@ -71,7 +71,7 @@ def test_parse_emits_typed_sections(settings, fake_pdf):
         _make_item("TEXT", text="正文段落内容", page=1, bbox=(10, 20, 30, 40)),
         _make_item("TABLE", page=2, table_md="| 列1 | 列2 |\n|---|---|\n| a | b |"),
         _make_item("CAPTION", text="表 1：示例", page=2),
-        _make_item("PICTURE", page=3),  # skipped — PyMuPDF handles images
+        _make_item("PICTURE", page=3),  # not rendered (extract_images=False below)
     ]
     converter = _make_converter(items)
 
@@ -89,7 +89,7 @@ def test_parse_emits_typed_sections(settings, fake_pdf):
     assert "text" in types
     assert "table" in types
     assert "figure_caption" in types
-    # PICTURE not emitted as a figure section (images come via PyMuPDF).
+    # PICTURE not rendered (extract_images=False → fitz_doc not opened).
     assert "figure" not in types
 
 
@@ -171,3 +171,201 @@ def test_parse_falls_back_when_no_sections(settings, fake_pdf):
         doc = parser.parse(fake_pdf)
 
     assert doc.metadata.get("degraded") is True
+
+
+def test_render_figure_region_renders_valid_bbox(settings, tmp_path):
+    """Figure with a valid, large-enough bbox is rendered to a PNG."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    # Mock pixmap + page + fitz_doc
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    item = _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400))  # 500x350 pt
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect"):
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is not None
+    assert img["id"] == "abcd1234_2_1"  # doc_hash[:8]_page_seq
+    assert img["page"] == 2
+    assert img["text_length"] == len("[IMAGE: abcd1234_2_1]")
+    assert img["position"] == {"width": 1000, "height": 700, "page": 2, "index": 0}
+    page.get_pixmap.assert_called_once()
+    # dpi=200 passed; clip= a fitz.Rect mock (patched)
+    _name, kwargs = page.get_pixmap.call_args
+    assert kwargs["dpi"] == 200
+    pix.save.assert_called_once()
+
+
+def test_render_figure_region_flips_y_axis_for_docling_bbox(settings, tmp_path):
+    """Docling's prov.bbox uses PDF bottom-left origin (t > b); the size filter
+    must take abs() and the PyMuPDF Rect must flip y via page height.
+
+    Real values from a quantum-circuit paper (page 3, A4): l=191.6 t=339.5
+    r=404.4 b=232.5 — height (b-t) is -107, so without abs() this is silently
+    filtered as "too small", and without the y-flip the rendered region is wrong.
+    """
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    page.rect = MagicMock(height=841.9)  # A4 page height in points
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    # Docling bottom-left origin: t=339.5 > b=232.5 (visual height = t-b = 107pt)
+    item = _make_item("PICTURE", page=3, bbox=(191.6, 339.5, 404.4, 232.5))
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect") as mock_rect:
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    # NOT filtered despite negative (b - t)
+    assert img is not None
+    # y-axis flipped via page height: Rect(l, page_h - t, r, page_h - b)
+    mock_rect.assert_called_once_with(191.6, 841.9 - 339.5, 404.4, 841.9 - 232.5)
+    page.get_pixmap.assert_called_once()
+
+
+def test_render_figure_region_skips_small_bbox(settings, tmp_path):
+    """Figure smaller than MIN_FIGURE_SIZE in either dimension is skipped."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    fitz_doc = MagicMock()
+    item = _make_item("PICTURE", page=1, bbox=(10, 10, 50, 50))  # 40x40 pt < 100
+
+    img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is None
+    fitz_doc.__getitem__.assert_not_called()  # page never accessed
+
+
+def test_render_figure_region_skips_missing_bbox(settings, tmp_path):
+    """Figure with no bbox provenance is skipped (Docling sometimes omits it)."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    fitz_doc = MagicMock()
+    item = _make_item("PICTURE", page=1)  # no bbox → prov.bbox = None
+
+    img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is None
+
+
+def test_parse_renders_figure_section_from_picture_item(settings, fake_pdf, tmp_path):
+    """A PICTURE item with a bbox is rendered → emits a figure section + image dict."""
+    items = [
+        _make_item("TEXT", text="正文段落", page=1),
+        _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),  # 500x350 pt
+        _make_item("FIGURE", page=3, bbox=(20, 20, 40, 40)),     # 20x20 pt → skipped
+    ]
+    converter = _make_converter(items)
+
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.fitz.open", return_value=fitz_doc), \
+         patch("src.libs.parser.docling_parser.fitz.Rect"), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", True):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=True,
+        )
+        doc = parser.parse(fake_pdf)
+
+    sections = doc.metadata["sections"]
+    fig_sections = [s for s in sections if s["type"] == "figure"]
+    assert len(fig_sections) == 1                       # only the 500x350 figure
+    assert fig_sections[0]["text"].startswith("[IMAGE:")
+    assert fig_sections[0]["page"] == 2
+    images = doc.metadata.get("images", [])
+    assert len(images) == 1
+    assert images[0]["page"] == 2
+    # The small FIGURE (20x20) was NOT rendered
+    assert all(img["page"] != 3 for img in images)
+
+
+def test_parse_no_rendering_when_extract_images_false(settings, fake_pdf, tmp_path):
+    """extract_images=False → fitz.open never called, no figure sections."""
+    items = [
+        _make_item("TEXT", text="正文段落", page=1),  # non-figure so sections non-empty
+        _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),
+    ]
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.fitz.open") as mock_open:
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    mock_open.assert_not_called()
+    sections = doc.metadata["sections"]
+    assert all(s["type"] != "figure" for s in sections)
+    assert doc.metadata.get("images", []) == []
+
+
+def test_parse_no_rendering_when_pymupdf_unavailable(settings, fake_pdf, tmp_path):
+    """PYMUPDF_AVAILABLE=False + extract_images=True → fitz.open not called,
+    PICTURE falls through (no figure section, no images)."""
+    items = [
+        _make_item("TEXT", text="正文段落", page=1),
+        _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),
+    ]
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.fitz.open") as mock_open, \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=True,
+        )
+        doc = parser.parse(fake_pdf)
+
+    mock_open.assert_not_called()
+    sections = doc.metadata["sections"]
+    assert all(s["type"] != "figure" for s in sections)
+    assert doc.metadata.get("images", []) == []
+
+
+def test_render_figure_region_returns_none_on_render_failure(settings, tmp_path):
+    """If page.get_pixmap raises, _render_figure_region catches and returns None."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    page = MagicMock()
+    page.get_pixmap = MagicMock(side_effect=RuntimeError("render boom"))
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+    item = _make_item("PICTURE", page=1, bbox=(50, 50, 550, 400))  # 500x350 pt
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect"):
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is None

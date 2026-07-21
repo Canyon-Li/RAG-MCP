@@ -41,6 +41,13 @@ def _register_vision_providers() -> None:
     except ImportError:
         pass
 
+    try:
+        from src.libs.llm.ollama_vision_llm import OllamaVisionLLM
+        from src.libs.llm.llm_factory import LLMFactory
+        LLMFactory.register_vision_provider("ollama", OllamaVisionLLM)
+    except ImportError:
+        pass
+
 
 class LLMFactory:
     """Factory for creating LLM provider instances.

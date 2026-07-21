@@ -27,20 +27,20 @@ embedding:
   deployment_name: ""
   api_version: ""
   api_key: ""  # read from ZHIPUAI_API_KEY env var
-  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  base_url: "http://localhost:11434/v1"
 
 # =============================================================================
-# Vision LLM Configuration (disabled per user choice)
+# Vision LLM Configuration (Ollama local)
 # =============================================================================
 vision_llm:
-  enabled: false
-  provider: "qwen"
-  model: "qwen-vl-max"
+  enabled: true
+  provider: "ollama"
+  model: "llava-phi3:3.8b"
   azure_endpoint: ""
   deployment_name: ""
   api_version: ""
   api_key: ""
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  base_url: "http://localhost:11434/v1"
   max_image_size: 2048
 
 # =============================================================================
@@ -110,5 +110,5 @@ ingestion:
   
   # Metadata Enricher Configuration (C6)
   metadata_enricher:
-    use_llm: true  # Set to true to enable LLM-based enrichment (requires LLM config)
+    use_llm: false # Set to true to enable LLM-based enrichment (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based enrichment
