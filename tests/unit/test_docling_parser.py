@@ -293,3 +293,45 @@ def test_parse_no_rendering_when_extract_images_false(settings, fake_pdf, tmp_pa
     sections = doc.metadata["sections"]
     assert all(s["type"] != "figure" for s in sections)
     assert doc.metadata.get("images", []) == []
+
+
+def test_parse_no_rendering_when_pymupdf_unavailable(settings, fake_pdf, tmp_path):
+    """PYMUPDF_AVAILABLE=False + extract_images=True → fitz.open not called,
+    PICTURE falls through (no figure section, no images)."""
+    items = [
+        _make_item("TEXT", text="正文段落", page=1),
+        _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),
+    ]
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.fitz.open") as mock_open, \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=True,
+        )
+        doc = parser.parse(fake_pdf)
+
+    mock_open.assert_not_called()
+    sections = doc.metadata["sections"]
+    assert all(s["type"] != "figure" for s in sections)
+    assert doc.metadata.get("images", []) == []
+
+
+def test_render_figure_region_returns_none_on_render_failure(settings, tmp_path):
+    """If page.get_pixmap raises, _render_figure_region catches and returns None."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    page = MagicMock()
+    page.get_pixmap = MagicMock(side_effect=RuntimeError("render boom"))
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+    item = _make_item("PICTURE", page=1, bbox=(50, 50, 550, 400))  # 500x350 pt
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect"):
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is None
