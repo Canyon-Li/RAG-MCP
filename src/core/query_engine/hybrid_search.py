@@ -251,11 +251,17 @@ class HybridSearch:
         
         # Merge explicit filters with query-extracted filters
         merged_filters = self._merge_filters(processed_query.filters, filters)
-        
+
+        # tags 是 list 语义，Chroma where 处理不了（list 被当 $in，匹配逗号字符串
+        # 必然失败 → 杀零）。tags 只走 post-fusion（Step 5 用 merged_filters）。
+        retrieval_filters = {
+            k: v for k, v in merged_filters.items() if k != "tags"
+        }
+
         # Step 2: Run retrievals
         dense_results, sparse_results, dense_error, sparse_error = self._run_retrievals(
             processed_query=processed_query,
-            filters=merged_filters,
+            filters=retrieval_filters,
             trace=trace,
         )
         
