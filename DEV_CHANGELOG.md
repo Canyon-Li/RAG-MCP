@@ -32,6 +32,7 @@
 | D-018 | 2026-07-16 | 图片结构化数据从 Chroma metadata 彻底解耦到 ImageStorage SQLite | 采纳 | refactor/pdf-image-retrieval |
 | D-019 | 2026-07-21 | docling 图片抽取从 get_images 改为 bbox 区域渲染（矢量图支持） | 采纳 | feat/docling-figure-render |
 | D-020 | 2026-07-21 | vision_llm 切本地 ollama（llava-phi3）并默认启用 | 采纳 | 9905e3f |
+| D-021 | 2026-07-21 | tags 过滤改为 post-fusion-only（剥离 pre-fusion + 读逗号字符串，存储层不动） | 采纳 | fix/tags-filter |
 
 ---
 
@@ -142,6 +143,19 @@
 - **理由**：本地模型零成本、无 key、隐私友好；Ollama 的 `/v1` 端点完全 OpenAI 兼容，继承父类省掉图片处理逻辑；`trust_env=False` 是 D-014 已验证的本地服务调用必备（系统代理会拦 localhost）。选 B 而非 C 是因为本项目定位是学习/面试，本地优先。
 - **代价 / 现状**：llava-phi3:3.8b 是小模型，复杂科学图描述质量有限（能用但不惊艳）；如需更强可换 llava-llama3 或走云端。已合入 main（`9905e3f`）。
 - **关联**：9905e3f；[ollama_vision_llm.py](src/libs/llm/ollama_vision_llm.py)；memory: system-proxy-intercepts-localhost。
+
+---
+
+## E. 查询过滤（2026-07-21）
+
+### D-021 tags 过滤改为 post-fusion-only（存储层不动）
+- **状态**：采纳。
+- **背景**：`PDF处理链路分析.md` §5 G4 发现 tags 元数据过滤完全不工作，三层故障叠加：① Chroma `_sanitize_metadata` 把 tags list 逗号拼接成字符串（标量约束的必然结果）；② `search()` 把含 tags 的 filters 直传 retrievers → Chroma `where={"tags":["azure"]}` 把 list 当 `$in` 去匹配逗号字符串 → 永不命中 → dense **杀零**；③ post-fusion 的 `_matches_filters` 对字符串做 `set()` → 按字符级拆分 → 语义错误。`QueryProcessor` 已能从 `tag:azure 架构图` 解析出 filters，**入口通但执行端全断**。
+- **备选**：范围上 A=仅修内联 `tag:` 语法 / B=加 MCP 显式 filters 参数 / C=含 pre-fusion Chroma 过滤；存储上 A=保留逗号拼接 / B=改 JSON 数组字符串；剥离注入点 = `hybrid_search.search()` 剥离 / = `chroma_store._build_where_clause` 跳过 tags。
+- **决策**：**范围 A + 存储 A + hybrid_search 层剥离**。`search()` 传 retrievers 前用字典推导剥离 `tags`（tags 只走 post-fusion）；`_matches_filters` tags 分支改读逗号字符串（`split(",")` + `strip()` 再求交，防御性兼容 list 形态）；存储层 `chroma_store.py` 零改动。
+- **理由**：tags 是 list 语义，Chroma 对字符串字段做不了 "list contains"，下推到 Chroma where 无意义反而杀零；post-fusion 在 Python 内存里 list 语义天然好处理。存储层不动 → 向后兼容已摄取数据，免重新摄取。"tags 是 post-fusion 专属"语义集中在 query 层一处，存储层保持通用。范围选 A 是因为内联 `tag:` 入口已存在，修通即兑现能力，MCP 显式参数是 YAGNI。
+- **代价 / 现状**：实现完成在分支 `fix/tags-filter`（commits `53c948b` + `389c293` + `bb16e85`），6 个新测试（5 单元 + 1 端到端），final review 判定 **Ready to merge**，待合并。**限制**：tags 过滤依赖 `metadata_filter_post=True`（默认 True）；若设 False 则 tags 静默失效（已在 `HybridSearchConfig` docstring 标注）；标量 filter（collection/doc_type/source_path）不受影响，仍可 pre-fusion。
+- **关联**：[hybrid_search.py](src/core/query_engine/hybrid_search.py)；`PDF处理链路分析.md` §5 G4。与 [[D-018]] 形成对照——同根问题"Chroma 存不了复合类型"，D-018 把图片**移出** Chroma 到 SQLite，本决策把 tags **留在** Chroma（逗号字符串）但只 post-fusion 消费。G5–G7 留后续。
 
 ---
 
