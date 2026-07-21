@@ -68,7 +68,10 @@ class HybridSearchConfig:
         enable_dense: Whether to use dense retrieval
         enable_sparse: Whether to use sparse retrieval
         parallel_retrieval: Whether to run retrievals in parallel
-        metadata_filter_post: Apply metadata filters after fusion (fallback)
+        metadata_filter_post: Apply metadata filters after fusion (fallback).
+            Note: tags filtering is post-fusion-only (Chroma can't do list-semantics
+            on its comma-joined string), so tags silently no-op if this is False.
+            Scalar filters (collection/doc_type/source_path) are unaffected.
     """
     dense_top_k: int = 20
     sparse_top_k: int = 20
