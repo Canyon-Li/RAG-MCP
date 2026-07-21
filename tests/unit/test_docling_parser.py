@@ -171,3 +171,64 @@ def test_parse_falls_back_when_no_sections(settings, fake_pdf):
         doc = parser.parse(fake_pdf)
 
     assert doc.metadata.get("degraded") is True
+
+
+def test_render_figure_region_renders_valid_bbox(settings, tmp_path):
+    """Figure with a valid, large-enough bbox is rendered to a PNG."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    # Mock pixmap + page + fitz_doc
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    item = _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400))  # 500x350 pt
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect"):
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is not None
+    assert img["id"] == "abcd1234_2_1"  # doc_hash[:8]_page_seq
+    assert img["page"] == 2
+    assert img["text_length"] == len("[IMAGE: abcd1234_2_1]")
+    assert img["position"] == {"width": 1000, "height": 700, "page": 2, "index": 0}
+    page.get_pixmap.assert_called_once()
+    # dpi=200 passed; clip= a fitz.Rect mock (patched)
+    _name, kwargs = page.get_pixmap.call_args
+    assert kwargs["dpi"] == 200
+    pix.save.assert_called_once()
+
+
+def test_render_figure_region_skips_small_bbox(settings, tmp_path):
+    """Figure smaller than MIN_FIGURE_SIZE in either dimension is skipped."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    fitz_doc = MagicMock()
+    item = _make_item("PICTURE", page=1, bbox=(10, 10, 50, 50))  # 40x40 pt < 100
+
+    img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is None
+    fitz_doc.__getitem__.assert_not_called()  # page never accessed
+
+
+def test_render_figure_region_skips_missing_bbox(settings, tmp_path):
+    """Figure with no bbox provenance is skipped (Docling sometimes omits it)."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    fitz_doc = MagicMock()
+    item = _make_item("PICTURE", page=1)  # no bbox → prov.bbox = None
+
+    img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is None

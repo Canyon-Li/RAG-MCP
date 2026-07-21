@@ -76,6 +76,11 @@ class DoclingParser(BaseParser):
     docling failure.
     """
 
+    # Region rendering for figure extraction (replaces get_images).
+    # get_pixmap(clip=bbox) captures both raster and vector content.
+    RENDER_DPI = 200  # Resolution for bbox rendering (clarity vs storage tradeoff)
+    MIN_FIGURE_SIZE = 100  # Skip figures < 100pt in either dim (filters logos/decorations)
+
     def __init__(
         self,
         settings: Any = None,
@@ -153,6 +158,80 @@ class DoclingParser(BaseParser):
     # ------------------------------------------------------------------
     # Docling extraction
     # ------------------------------------------------------------------
+
+    def _is_figure_item(self, item: Any) -> bool:
+        """Return True if the Docling item is a figure (PICTURE/FIGURE label)."""
+        return _LABEL_MAP.get(self._item_label(item)) == "figure"
+
+    def _render_figure_region(
+        self,
+        fitz_doc: Any,
+        item: Any,
+        doc_hash: str,
+        fig_index: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Render a Docling Figure item's bbox region to a PNG via PyMuPDF.
+
+        Captures BOTH raster and vector graphics by rendering the page area
+        to pixels — unlike the old ``get_images()`` which only found embedded
+        raster objects. Returns None when the figure should be skipped (too
+        small, missing bbox, or render failure).
+
+        Args:
+            fitz_doc: Open ``fitz.Document`` shared across all figures in a parse.
+            item: Docling item with label PICTURE/FIGURE and ``prov.bbox``.
+            doc_hash: Document hash (for image sub-directory + id).
+            fig_index: Global figure counter (for unique image id).
+
+        Returns:
+            Standard image dict (same shape as old ``_extract_page_images``
+            output), or None if the figure is skipped.
+        """
+        page_num, bbox = self._provenance(item)
+        if not bbox:
+            logger.debug(f"Skip figure on page {page_num}: no bbox provenance")
+            return None
+
+        width = bbox["x1"] - bbox["x0"]
+        height = bbox["bottom"] - bbox["top"]
+        if width < self.MIN_FIGURE_SIZE or height < self.MIN_FIGURE_SIZE:
+            logger.debug(
+                f"Skip small figure on page {page_num}: {width:.0f}x{height:.0f}pt"
+            )
+            return None
+
+        try:
+            page = fitz_doc[page_num - 1]
+            rect = fitz.Rect(bbox["x0"], bbox["top"], bbox["x1"], bbox["bottom"])
+            pix = page.get_pixmap(clip=rect, dpi=self.RENDER_DPI)
+
+            image_id = self._generate_image_id(doc_hash, page_num, fig_index + 1)
+            image_dir = self.image_storage_dir / doc_hash
+            image_dir.mkdir(parents=True, exist_ok=True)
+            image_path = image_dir / f"{image_id}.png"
+            pix.save(image_path)
+
+            try:
+                stored_path = image_path.relative_to(Path.cwd())
+            except ValueError:
+                stored_path = image_path.absolute()
+
+            return {
+                "id": image_id,
+                "path": str(stored_path),
+                "page": page_num,
+                "text_offset": 0,
+                "text_length": len(f"[IMAGE: {image_id}]"),
+                "position": {
+                    "width": pix.width,
+                    "height": pix.height,
+                    "page": page_num,
+                    "index": fig_index,
+                },
+            }
+        except Exception as e:
+            logger.warning(f"Failed to render figure on page {page_num}: {e}")
+            return None
 
     def _extract_with_docling(
         self, path: Path, doc_hash: str
