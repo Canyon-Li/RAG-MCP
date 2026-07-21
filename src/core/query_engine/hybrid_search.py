@@ -728,8 +728,13 @@ class HybridSearch:
                 if metadata.get("doc_type") != value:
                     return False
             elif key == "tags":
-                # Tags is a list - check intersection
-                meta_tags = metadata.get("tags", [])
+                # tags 经 Chroma _sanitize_metadata 落盘后是逗号字符串；
+                # 防御性兼容 list 形态（未过 sanitize 的场景，如单元测试直构）。
+                meta_tags = metadata.get("tags", "")
+                if isinstance(meta_tags, str):
+                    meta_tags = [t.strip() for t in meta_tags.split(",") if t.strip()]
+                elif not isinstance(meta_tags, list):
+                    meta_tags = []
                 if not isinstance(value, list):
                     value = [value]
                 if not set(meta_tags) & set(value):

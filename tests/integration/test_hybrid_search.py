@@ -876,9 +876,65 @@ class TestRRFFusionIntegration:
         # Run same search multiple times
         results1 = hybrid.search("配置", top_k=5)
         results2 = hybrid.search("配置", top_k=5)
-        
+
         # Results should be identical
         assert len(results1) == len(results2)
         for r1, r2 in zip(results1, results2):
             assert r1.chunk_id == r2.chunk_id
             assert r1.score == r2.score
+
+
+# =============================================================================
+# G4 Tags-Filter Read-Comma-String Tests
+# =============================================================================
+
+class TestTagsFilterReadCommaString:
+    """G4: _matches_filters tags 分支必须正确读 Chroma 落盘后的逗号字符串。
+
+    Chroma 的 _sanitize_metadata 把 tags list 逗号拼接成字符串（保留不改），
+    所以 post-fusion 过滤必须 split 逗号字符串再求交集。
+    """
+
+    def _make_hybrid(self, query_processor, rrf_fusion):
+        """构造一个最小 HybridSearch 实例（mock retriever，供直接调 _matches_filters）。"""
+        return HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=MockDenseRetriever(results=[]),
+            sparse_retriever=MockSparseRetriever(results=[]),
+            fusion=rrf_fusion,
+        )
+
+    def test_tags_comma_string_match(self, query_processor, rrf_fusion):
+        """逗号字符串形态，命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": "azure,cloud"}, {"tags": ["azure"]}
+        ) is True
+
+    def test_tags_comma_string_no_match(self, query_processor, rrf_fusion):
+        """逗号字符串形态，不命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": "azure,cloud"}, {"tags": ["aws"]}
+        ) is False
+
+    def test_tags_empty_string(self, query_processor, rrf_fusion):
+        """空字符串（chunk 无标签）→ 不命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": ""}, {"tags": ["azure"]}
+        ) is False
+
+    def test_tags_strips_whitespace(self, query_processor, rrf_fusion):
+        """标签带空格 → strip 后命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": " azure , cloud "}, {"tags": ["cloud"]}
+        ) is True
+
+    def test_tags_list_form_defensive(self, query_processor, rrf_fusion):
+        """防御性兼容 list 形态（未过 sanitize 的场景，如测试直构）。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": ["azure", "cloud"]}, {"tags": ["azure"]}
+        ) is True
