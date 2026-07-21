@@ -13,13 +13,13 @@ as-is (§15.1: plain text for embed, structured form for display).
 
 Constructor contract (shared): ``__init__(settings, collection, image_storage_dir,
 extract_images, **kwargs)``. Falls back to ``PdfTextParser`` (MarkItDown) when
-docling raises (degradation chain: docling → pdf_text). Image extraction via
-PyMuPDF (same image-dict format as PdfTableParser).
+docling raises (degradation chain: docling → pdf_text). Figure regions are
+rendered to PNG via PyMuPDF ``get_pixmap(clip=bbox)`` (captures both raster
+and vector graphics); the emitted image dicts match PdfTableParser's contract.
 """
 
 from __future__ import annotations
 
-import io
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,8 +37,6 @@ try:
     PYMUPDF_AVAILABLE = True
 except ImportError:
     PYMUPDF_AVAILABLE = False
-
-from PIL import Image
 
 from src.core.types import Document
 from src.libs.parser.base_parser import BaseParser
@@ -71,9 +69,9 @@ class DoclingParser(BaseParser):
     Per document: run ``DocumentConverter``, walk ``DoclingDocument.iterate_items``
     in reading order, and emit typed sections (title/text/table/figure/figure_caption).
     Tables keep Docling's GFM Markdown in both ``text`` (embed/BM25) and ``html``
-    (display) fields. Images are extracted via PyMuPDF (Docling picture pixel
-    extraction is heavier and not needed here). Falls back to PdfTextParser on
-    docling failure.
+    (display) fields. Figure regions are rendered to PNG via PyMuPDF
+    ``get_pixmap(clip=bbox)`` (captures raster + vector). Falls back to
+    PdfTextParser on docling failure.
     """
 
     # Region rendering for figure extraction (replaces get_images).
@@ -236,35 +234,50 @@ class DoclingParser(BaseParser):
     def _extract_with_docling(
         self, path: Path, doc_hash: str
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Extract typed sections and images via Docling (+ PyMuPDF for images)."""
+        """Extract typed sections and figures via Docling.
+
+        Figures are rendered from each Docling Figure item's bbox via PyMuPDF
+        (``get_pixmap(clip=bbox)``) — this captures both raster and vector
+        graphics in one pass, replacing the old ``get_images()`` raster-only
+        extraction.
+        """
         converter = self._build_converter()
         result = converter.convert(str(path))
         ddoc = result.document
 
         sections: List[Dict[str, Any]] = []
-        for item, _level in ddoc.iterate_items():
-            sec = self._item_to_section(item, ddoc)
-            if sec:
-                sections.append(sec)
-
-        # Images via PyMuPDF (per-page, same dict format as PdfTableParser).
         images: List[Dict[str, Any]] = []
-        if self.extract_images and PYMUPDF_AVAILABLE:
-            with fitz.open(path) as doc:
-                n_pages = len(doc)
-            for page_num in range(1, n_pages + 1):
-                for img in self._extract_page_images(path, page_num, doc_hash):
-                    images.append(img)
-                    # Figure section so the [IMAGE:id] placeholder flows through
-                    # the chunker (merged into adjacent text).
-                    sections.append({
-                        "type": "figure",
-                        "text": f"[IMAGE: {img['id']}]",
-                        "page": page_num,
-                        "bbox": None,
-                        "images": [img],
-                        "html": None,
-                    })
+
+        # Open the fitz document once and share it across all figure renders.
+        fitz_doc = (
+            fitz.open(path) if (self.extract_images and PYMUPDF_AVAILABLE) else None
+        )
+        fig_counter = 0
+        try:
+            for item, _level in ddoc.iterate_items():
+                if fitz_doc is not None and self._is_figure_item(item):
+                    rendered = self._render_figure_region(
+                        fitz_doc, item, doc_hash, fig_counter
+                    )
+                    if rendered is not None:
+                        fig_counter += 1
+                        images.append(rendered)
+                        sections.append({
+                            "type": "figure",
+                            "text": f"[IMAGE: {rendered['id']}]",
+                            "page": rendered["page"],
+                            "bbox": None,
+                            "images": [rendered],
+                            "html": None,
+                        })
+                        continue
+                sec = self._item_to_section(item, ddoc)
+                if sec:
+                    sections.append(sec)
+        finally:
+            if fitz_doc is not None:
+                fitz_doc.close()
+
         return sections, images
 
     def _build_converter(self) -> Any:
@@ -299,7 +312,9 @@ class DoclingParser(BaseParser):
 
         stype = _LABEL_MAP.get(label, "text")
         if stype == "figure":
-            # Pictures are extracted via PyMuPDF above; skip here to avoid dupes.
+            # Figures are rendered in _extract_with_docling above. Reaching here
+            # means rendering was skipped (too small / no bbox / images disabled)
+            # — drop the item rather than emit an empty figure section.
             return None
 
         text = getattr(item, "text", None) or ""
@@ -357,70 +372,6 @@ class DoclingParser(BaseParser):
                 "bottom": getattr(bbox_obj, "b", None),
             }
         return page, bbox
-
-    # ------------------------------------------------------------------
-    # Images (PyMuPDF) — mirrors PdfTableParser._extract_page_images so the
-    # emitted image dicts match the Document.images contract exactly.
-    # ------------------------------------------------------------------
-
-    def _extract_page_images(
-        self, pdf_path: Path, page_num: int, doc_hash: str
-    ) -> List[Dict[str, Any]]:
-        """Extract embedded images from one page via PyMuPDF (best-effort)."""
-        if not self.extract_images or not PYMUPDF_AVAILABLE:
-            return []
-        images: List[Dict[str, Any]] = []
-        try:
-            image_dir = self.image_storage_dir / doc_hash
-            image_dir.mkdir(parents=True, exist_ok=True)
-            doc = fitz.open(pdf_path)
-            try:
-                if page_num - 1 >= len(doc):
-                    return []
-                page = doc[page_num - 1]
-                for img_index, img_info in enumerate(page.get_images(full=True)):
-                    try:
-                        xref = img_info[0]
-                        base_image = doc.extract_image(xref)
-                        image_bytes = base_image["image"]
-                        image_ext = base_image["ext"]
-                        image_id = self._generate_image_id(doc_hash, page_num, img_index + 1)
-                        image_filename = f"{image_id}.{image_ext}"
-                        image_path = image_dir / image_filename
-                        with open(image_path, "wb") as f:
-                            f.write(image_bytes)
-                        try:
-                            img = Image.open(io.BytesIO(image_bytes))
-                            width, height = img.size
-                        except Exception:
-                            width, height = 0, 0
-                        try:
-                            stored_path = image_path.relative_to(Path.cwd())
-                        except ValueError:
-                            stored_path = image_path.absolute()
-                        images.append({
-                            "id": image_id,
-                            "path": str(stored_path),
-                            "page": page_num,
-                            "text_offset": 0,
-                            "text_length": len(f"[IMAGE: {image_id}]"),
-                            "position": {
-                                "width": width,
-                                "height": height,
-                                "page": page_num,
-                                "index": img_index,
-                            },
-                        })
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to extract image {img_index} from page {page_num}: {e}"
-                        )
-                        continue
-            finally:
-                doc.close()
-        except Exception as e:
-            logger.warning(f"Image extraction failed for {pdf_path} page {page_num}: {e}")
-        return images
 
     # ------------------------------------------------------------------
     # Fallback + helpers

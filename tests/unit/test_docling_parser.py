@@ -71,7 +71,7 @@ def test_parse_emits_typed_sections(settings, fake_pdf):
         _make_item("TEXT", text="正文段落内容", page=1, bbox=(10, 20, 30, 40)),
         _make_item("TABLE", page=2, table_md="| 列1 | 列2 |\n|---|---|\n| a | b |"),
         _make_item("CAPTION", text="表 1：示例", page=2),
-        _make_item("PICTURE", page=3),  # skipped — PyMuPDF handles images
+        _make_item("PICTURE", page=3),  # not rendered (extract_images=False below)
     ]
     converter = _make_converter(items)
 
@@ -89,7 +89,7 @@ def test_parse_emits_typed_sections(settings, fake_pdf):
     assert "text" in types
     assert "table" in types
     assert "figure_caption" in types
-    # PICTURE not emitted as a figure section (images come via PyMuPDF).
+    # PICTURE not rendered (extract_images=False → fitz_doc not opened).
     assert "figure" not in types
 
 
@@ -232,3 +232,64 @@ def test_render_figure_region_skips_missing_bbox(settings, tmp_path):
     img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
 
     assert img is None
+
+
+def test_parse_renders_figure_section_from_picture_item(settings, fake_pdf, tmp_path):
+    """A PICTURE item with a bbox is rendered → emits a figure section + image dict."""
+    items = [
+        _make_item("TEXT", text="正文段落", page=1),
+        _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),  # 500x350 pt
+        _make_item("FIGURE", page=3, bbox=(20, 20, 40, 40)),     # 20x20 pt → skipped
+    ]
+    converter = _make_converter(items)
+
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.fitz.open", return_value=fitz_doc), \
+         patch("src.libs.parser.docling_parser.fitz.Rect"), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", True):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=True,
+        )
+        doc = parser.parse(fake_pdf)
+
+    sections = doc.metadata["sections"]
+    fig_sections = [s for s in sections if s["type"] == "figure"]
+    assert len(fig_sections) == 1                       # only the 500x350 figure
+    assert fig_sections[0]["text"].startswith("[IMAGE:")
+    assert fig_sections[0]["page"] == 2
+    images = doc.metadata.get("images", [])
+    assert len(images) == 1
+    assert images[0]["page"] == 2
+    # The small FIGURE (20x20) was NOT rendered
+    assert all(img["page"] != 3 for img in images)
+
+
+def test_parse_no_rendering_when_extract_images_false(settings, fake_pdf, tmp_path):
+    """extract_images=False → fitz.open never called, no figure sections."""
+    items = [
+        _make_item("TEXT", text="正文段落", page=1),  # non-figure so sections non-empty
+        _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),
+    ]
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.fitz.open") as mock_open:
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    mock_open.assert_not_called()
+    sections = doc.metadata["sections"]
+    assert all(s["type"] != "figure" for s in sections)
+    assert doc.metadata.get("images", []) == []
