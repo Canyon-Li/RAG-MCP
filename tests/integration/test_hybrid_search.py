@@ -1073,3 +1073,99 @@ class TestCollectionFilterN1:
             "Azure", top_k=10, filters={"collection": "api-docs"}
         )
         assert len(results) > 0, "collection filter 不应在 metadata 无该字段时杀零"
+
+
+# =============================================================================
+# N3: source_path 用 partial 语义（post-fusion 子串匹配）
+# =============================================================================
+
+class TestSourcePathPartialN3:
+    """N3: source_path 两层一致 —— pre-fusion 剥离（Dense 不下推 exact）+
+    post-fusion partial 子串匹配。锁定 partial 行为，防回归为 exact。
+    """
+
+    def test_source_path_partial_match(self, query_processor, rrf_fusion):
+        """post-fusion source_path partial：子串命中。"""
+        results = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="Azure 配置",
+                metadata={"source_path": "docs/azure-setup.pdf"},
+            ),
+            RetrievalResult(
+                chunk_id="b", score=0.85, text="其他",
+                metadata={"source_path": "docs/other.pdf"},
+            ),
+        ]
+        dense = MockDenseRetriever(results=results)
+        sparse = MockSparseRetriever(results=results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        out = hybrid.search(
+            "Azure", top_k=10, filters={"source_path": "azure"}
+        )
+        assert [r.chunk_id for r in out] == ["a"], \
+            "partial：只命中 source_path 含 'azure' 子串的 chunk"
+
+    def test_source_path_partial_no_match(self, query_processor, rrf_fusion):
+        """post-fusion source_path partial：子串不命中 → 排除。"""
+        results = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="Azure",
+                metadata={"source_path": "docs/azure.pdf"},
+            ),
+        ]
+        dense = MockDenseRetriever(results=results)
+        sparse = MockSparseRetriever(results=results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        out = hybrid.search(
+            "Azure", top_k=10, filters={"source_path": "nonexistent"}
+        )
+        assert out == [], "子串不命中应排除全部"
+
+
+# =============================================================================
+# ②A: generic filter（custom_field:xxx）对缺字段的 chunk 排除
+# =============================================================================
+
+class TestGenericMissingFieldExclude:
+    """②A: generic filter 的正确语义 —— chunk 缺该字段时排除（与 tags、
+    Chroma where 天然行为一致）。_matches_filters else 分支
+    ``metadata.get(key) != value``，缺字段时 None != value → 排除。
+    锁定行为，防回归。
+    """
+
+    def _make_hybrid(self, query_processor, rrf_fusion):
+        return HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=MockDenseRetriever(results=[]),
+            sparse_retriever=MockSparseRetriever(results=[]),
+            fusion=rrf_fusion,
+        )
+
+    def test_generic_present_match(self, query_processor, rrf_fusion):
+        """chunk 有字段且值匹配 → 保留。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"author": "张三"}, {"author": "张三"}
+        ) is True
+
+    def test_generic_present_mismatch(self, query_processor, rrf_fusion):
+        """chunk 有字段但值不匹配 → 排除。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"author": "李四"}, {"author": "张三"}
+        ) is False
+
+    def test_generic_missing_field_excluded(self, query_processor, rrf_fusion):
+        """chunk 缺该字段 → 排除（filter 正确语义，非放行）。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"other_field": "x"}, {"author": "张三"}
+        ) is False
