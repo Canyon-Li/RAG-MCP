@@ -876,9 +876,113 @@ class TestRRFFusionIntegration:
         # Run same search multiple times
         results1 = hybrid.search("配置", top_k=5)
         results2 = hybrid.search("配置", top_k=5)
-        
+
         # Results should be identical
         assert len(results1) == len(results2)
         for r1, r2 in zip(results1, results2):
             assert r1.chunk_id == r2.chunk_id
             assert r1.score == r2.score
+
+
+# =============================================================================
+# G4 Tags-Filter Read-Comma-String Tests
+# =============================================================================
+
+class TestTagsFilterReadCommaString:
+    """G4: _matches_filters tags 分支必须正确读 Chroma 落盘后的逗号字符串。
+
+    Chroma 的 _sanitize_metadata 把 tags list 逗号拼接成字符串（保留不改），
+    所以 post-fusion 过滤必须 split 逗号字符串再求交集。
+    """
+
+    def _make_hybrid(self, query_processor, rrf_fusion):
+        """构造一个最小 HybridSearch 实例（mock retriever，供直接调 _matches_filters）。"""
+        return HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=MockDenseRetriever(results=[]),
+            sparse_retriever=MockSparseRetriever(results=[]),
+            fusion=rrf_fusion,
+        )
+
+    def test_tags_comma_string_match(self, query_processor, rrf_fusion):
+        """逗号字符串形态，命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": "azure,cloud"}, {"tags": ["azure"]}
+        ) is True
+
+    def test_tags_comma_string_no_match(self, query_processor, rrf_fusion):
+        """逗号字符串形态，不命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": "azure,cloud"}, {"tags": ["aws"]}
+        ) is False
+
+    def test_tags_empty_string(self, query_processor, rrf_fusion):
+        """空字符串（chunk 无标签）→ 不命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": ""}, {"tags": ["azure"]}
+        ) is False
+
+    def test_tags_strips_whitespace(self, query_processor, rrf_fusion):
+        """标签带空格 → strip 后命中。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": " azure , cloud "}, {"tags": ["cloud"]}
+        ) is True
+
+    def test_tags_list_form_defensive(self, query_processor, rrf_fusion):
+        """防御性兼容 list 形态（未过 sanitize 的场景，如测试直构）。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"tags": ["azure", "cloud"]}, {"tags": ["azure"]}
+        ) is True
+
+
+# =============================================================================
+# G4 Tags-Filter Pre-Fusion Strip Tests
+# =============================================================================
+
+class TestTagsFilterPreFusionStrip:
+    """G4: tag:xxx 查询必须把 tags 从 retrieval filters 剥离（只走 post-fusion）。
+
+    否则 tags 进 Chroma where → list 被当 $in → 匹配逗号字符串失败 → dense 杀零。
+    """
+
+    def test_tag_query_strips_pre_fusion_and_filters_post_fusion(
+        self, query_processor, rrf_fusion,
+    ):
+        """tag:azure 查询：retrievers 不收到 tags，且 post-fusion 过滤到 azure 标签。"""
+        # 模拟 Chroma 落盘后的逗号字符串 tags
+        results_with_tags = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="Azure 架构说明",
+                metadata={"tags": "azure,cloud"},
+            ),
+            RetrievalResult(
+                chunk_id="b", score=0.85, text="AWS 架构说明",
+                metadata={"tags": "aws"},
+            ),
+            RetrievalResult(
+                chunk_id="c", score=0.8, text="通用说明",
+                metadata={"tags": ""},
+            ),
+        ]
+        dense = MockDenseRetriever(results=results_with_tags)
+        sparse = MockSparseRetriever(results=results_with_tags)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense,
+            sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+
+        results = hybrid.search("tag:azure 架构", top_k=10)
+
+        # (a) tags 被剥离，不进 retrieval filters（pre-fusion 杀零避免）
+        assert "tags" not in (dense.last_filters or {}), \
+            "tags 不应进入 retrieval filters，否则 Chroma where 杀零"
+        # (b) post-fusion 过滤：只返回带 azure 标签的 chunk
+        assert [r.chunk_id for r in results] == ["a"], \
+            "post-fusion 应过滤到 azure 标签的 chunk"

@@ -68,7 +68,10 @@ class HybridSearchConfig:
         enable_dense: Whether to use dense retrieval
         enable_sparse: Whether to use sparse retrieval
         parallel_retrieval: Whether to run retrievals in parallel
-        metadata_filter_post: Apply metadata filters after fusion (fallback)
+        metadata_filter_post: Apply metadata filters after fusion (fallback).
+            Note: tags filtering is post-fusion-only (Chroma can't do list-semantics
+            on its comma-joined string), so tags silently no-op if this is False.
+            Scalar filters (collection/doc_type/source_path) are unaffected.
     """
     dense_top_k: int = 20
     sparse_top_k: int = 20
@@ -251,11 +254,17 @@ class HybridSearch:
         
         # Merge explicit filters with query-extracted filters
         merged_filters = self._merge_filters(processed_query.filters, filters)
-        
+
+        # tags 是 list 语义，Chroma where 处理不了（list 被当 $in，匹配逗号字符串
+        # 必然失败 → 杀零）。tags 只走 post-fusion（Step 5 用 merged_filters）。
+        retrieval_filters = {
+            k: v for k, v in merged_filters.items() if k != "tags"
+        }
+
         # Step 2: Run retrievals
         dense_results, sparse_results, dense_error, sparse_error = self._run_retrievals(
             processed_query=processed_query,
-            filters=merged_filters,
+            filters=retrieval_filters,
             trace=trace,
         )
         
@@ -728,8 +737,13 @@ class HybridSearch:
                 if metadata.get("doc_type") != value:
                     return False
             elif key == "tags":
-                # Tags is a list - check intersection
-                meta_tags = metadata.get("tags", [])
+                # tags 经 Chroma _sanitize_metadata 落盘后是逗号字符串；
+                # 防御性兼容 list 形态（未过 sanitize 的场景，如单元测试直构）。
+                meta_tags = metadata.get("tags", "")
+                if isinstance(meta_tags, str):
+                    meta_tags = [t.strip() for t in meta_tags.split(",") if t.strip()]
+                elif not isinstance(meta_tags, list):
+                    meta_tags = []
                 if not isinstance(value, list):
                     value = [value]
                 if not set(meta_tags) & set(value):
