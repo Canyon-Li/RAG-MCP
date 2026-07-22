@@ -377,7 +377,10 @@ class IngestionPipeline:
             # 4c: Image Captioning
             logger.info("  4c. Image Captioning...")
             chunks = self.image_captioner.transform(chunks, trace)
-            captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
+            # ImageCaptioner 不再写 metadata["image_captions"]；改为按 caption
+            # 缝进 chunk.text 的固定标记 "(Description:" 判定（见
+            # image_captioner.py 的 [IMAGE: id]\n(Description: {caption}) 缝入）。
+            captioned = sum(1 for c in chunks if "(Description:" in c.text)
             logger.info(f"      Chunks with captions: {captioned}")
             
             stages["transform"] = {
