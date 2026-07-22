@@ -218,15 +218,18 @@ class TestFilterAllowlistN4:
 
         r = processor.process("官网 https://example.com 地址")
         assert r.filters == {}
+        assert "官网" in r.keywords
 
         r = processor.process("Azure:服务端 配置")
         assert r.filters == {}
+        assert "Azure" in r.keywords or "服务端" in r.keywords
 
     def test_windows_path_not_filter(self):
         """Windows 路径 c:\\... 不当 filter（c 已不是别名）。"""
         processor = QueryProcessor()
         r = processor.process(r"路径 c:\Users\test 文档")
         assert r.filters == {}
+        assert "路径" in r.keywords or "文档" in r.keywords
 
     def test_single_letter_alias_disabled(self):
         """单字母别名 c/s/t 已删除，不再当 filter。"""
