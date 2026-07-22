@@ -32,6 +32,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Metadata filter keys that must NOT be pushed down to Chroma ``where``
+# (pre-fusion). Each is handled only in post-fusion ``_matches_filters``:
+# - "tags":        list semantics; Chroma stores a comma-joined string,
+#                   ``where`` can't do intersection (D-021).
+# - "collection":  not a chunk metadata field (physical isolation via
+#                   separate Chroma collection + BM25 index); pushing down
+#                   kills all results (N1).
+# - "source_path": partial semantics; Chroma ``where`` defaults to exact (N3).
+POST_ONLY_FILTERS = {"tags", "collection", "source_path"}
+
 
 def _snapshot_results(
     results: Optional[List[RetrievalResult]],
@@ -69,9 +79,10 @@ class HybridSearchConfig:
         enable_sparse: Whether to use sparse retrieval
         parallel_retrieval: Whether to run retrievals in parallel
         metadata_filter_post: Apply metadata filters after fusion (fallback).
-            Note: tags filtering is post-fusion-only (Chroma can't do list-semantics
-            on its comma-joined string), so tags silently no-op if this is False.
-            Scalar filters (collection/doc_type/source_path) are unaffected.
+            Note: tags / collection / source_path filtering is post-fusion-only
+            (see POST_ONLY_FILTERS), so these silently no-op if this is False.
+            doc_type and generic (custom-field) filters still apply via Dense
+            pre-fusion pushdown regardless of this flag.
     """
     dense_top_k: int = 20
     sparse_top_k: int = 20
@@ -255,16 +266,10 @@ class HybridSearch:
         # Merge explicit filters with query-extracted filters
         merged_filters = self._merge_filters(processed_query.filters, filters)
 
-        # tags 是 list 语义，Chroma where 处理不了（list 被当 $in，匹配逗号字符串
-        # 必然失败 → 杀零）。tags 只走 post-fusion（Step 5 用 merged_filters）。
-        retrieval_filters = {
-            k: v for k, v in merged_filters.items() if k != "tags"
-        }
-
         # Step 2: Run retrievals
         dense_results, sparse_results, dense_error, sparse_error = self._run_retrievals(
             processed_query=processed_query,
-            filters=retrieval_filters,
+            filters=merged_filters,
             trace=trace,
         )
         
@@ -510,7 +515,15 @@ class HybridSearch:
         """
         if self.dense_retriever is None:
             return None, "Dense retriever not configured"
-        
+
+        # 这些 key 的语义 Chroma where 表达不了，剥离后只下推 doc_type/generic
+        # （见 POST_ONLY_FILTERS 模块级注释）。sparse 路径不受影响——它从完整
+        # merged_filters 取 collection 选 BM25 index，不经过这里。
+        if filters:
+            filters = {
+                k: v for k, v in filters.items() if k not in POST_ONLY_FILTERS
+            }
+
         try:
             _t0 = time.monotonic()
             results = self.dense_retriever.retrieve(
@@ -726,13 +739,11 @@ class HybridSearch:
         """
         for key, value in filters.items():
             if key == "collection":
-                # Collection might be in different metadata keys
-                meta_collection = (
-                    metadata.get("collection") 
-                    or metadata.get("source_collection")
-                )
-                if meta_collection != value:
-                    return False
+                # 物理隔离已保证（独立 Chroma collection + BM25 index），metadata
+                # 不携带 collection；放行，不检查。
+                # ⚠️ 必须用 continue，不能用 return True —— 后者会跳过后续
+                # doc_type / source_path 等其他 key 的检查，引入新 bug。
+                continue
             elif key == "doc_type":
                 if metadata.get("doc_type") != value:
                     return False

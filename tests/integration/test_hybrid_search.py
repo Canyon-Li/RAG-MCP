@@ -493,8 +493,10 @@ class TestHybridSearchFilters:
         )
         
         hybrid.search("Azure", top_k=5, filters={"collection": "api-docs"})
-        
-        assert dense.last_filters == {"collection": "api-docs"}
+
+        # N1: collection 从 retrieval filters 剥离（metadata 不携带，下推杀零），
+        # 但 sparse 仍用 collection 选 BM25 index。
+        assert "collection" not in (dense.last_filters or {})
         assert sparse.last_collection == "api-docs"
     
     def test_query_filter_syntax_extraction(
@@ -521,32 +523,40 @@ class TestHybridSearchFilters:
         assert result.processed_query is not None
         assert "collection" in result.processed_query.filters
     
-    def test_post_fusion_metadata_filter(
+    def test_post_fusion_metadata_filter_doc_type(
         self,
         query_processor: QueryProcessor,
         rrf_fusion: RRFFusion,
-        sample_dense_results: List[RetrievalResult],
-        sample_sparse_results: List[RetrievalResult],
     ):
-        """Test post-fusion metadata filtering."""
-        dense = MockDenseRetriever(results=sample_dense_results)
-        sparse = MockSparseRetriever(results=sample_sparse_results)
-        
+        """post-fusion 按 doc_type 过滤（doc_type 是 chunk 必有 metadata 字段）。
+
+        原 test_post_fusion_metadata_filter 用 collection，但 collection 已改
+        为放行（N1），故改用 doc_type 验证 post-fusion 过滤仍有效。
+        """
+        results = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="PDF 文档内容",
+                metadata={"source_path": "a.pdf", "doc_type": "pdf"},
+            ),
+            RetrievalResult(
+                chunk_id="b", score=0.85, text="Word 文档内容",
+                metadata={"source_path": "b.docx", "doc_type": "docx"},
+            ),
+        ]
+        dense = MockDenseRetriever(results=results)
+        sparse = MockSparseRetriever(results=results)
+
         config = HybridSearchConfig(metadata_filter_post=True)
         hybrid = HybridSearch(
             query_processor=query_processor,
-            dense_retriever=dense,
-            sparse_retriever=sparse,
-            fusion=rrf_fusion,
-            config=config,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion, config=config,
         )
-        
-        # Filter for api-docs collection only
-        results = hybrid.search("Azure", top_k=10, filters={"collection": "api-docs"})
-        
-        # All results should have collection=api-docs
-        for r in results:
-            assert r.metadata.get("collection") == "api-docs"
+
+        out = hybrid.search("文档", top_k=10, filters={"doc_type": "pdf"})
+
+        assert [r.chunk_id for r in out] == ["a"], \
+            "post-fusion 应过滤到 doc_type=pdf 的 chunk"
 
 
 # =============================================================================
@@ -986,3 +996,176 @@ class TestTagsFilterPreFusionStrip:
         # (b) post-fusion 过滤：只返回带 azure 标签的 chunk
         assert [r.chunk_id for r in results] == ["a"], \
             "post-fusion 应过滤到 azure 标签的 chunk"
+
+
+# =============================================================================
+# N1: collection filter 必须从 pre-fusion 剥离 + post-fusion 放行
+# =============================================================================
+
+class TestCollectionFilterN1:
+    """N1: chunk metadata 不携带 collection（物理隔离维度），下推 Chroma where
+    会杀零。collection 靠独立 Chroma collection + BM25 index 物理隔离保证，
+    filter 层必须剥离 + 放行。
+    """
+
+    def test_collection_stripped_from_retrieval_filters(
+        self, query_processor, rrf_fusion,
+        sample_dense_results, sample_sparse_results,
+    ):
+        """collection:xxx 查询 → dense 不收到 collection（剥离），sparse 收到（选 index）。"""
+        dense = MockDenseRetriever(results=sample_dense_results)
+        sparse = MockSparseRetriever(results=sample_sparse_results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        hybrid.search("collection:api-docs Azure", top_k=5)
+        # collection 被剥离出 retrieval filters（否则 Chroma where 杀零）
+        assert "collection" not in (dense.last_filters or {}), \
+            "collection 不应进入 retrieval filters（metadata 无此字段，下推杀零）"
+        # sparse 仍用 collection 选 BM25 index（物理隔离维度）
+        assert sparse.last_collection == "api-docs"
+
+    def test_source_path_stripped_from_retrieval_filters(
+        self, query_processor, rrf_fusion,
+        sample_dense_results, sample_sparse_results,
+    ):
+        """N3: source:xxx 查询 → dense 不收到 source_path（剥离，避免 exact 杀零）。"""
+        dense = MockDenseRetriever(results=sample_dense_results)
+        sparse = MockSparseRetriever(results=sample_sparse_results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        hybrid.search("source:azure Azure", top_k=5)
+        assert "source_path" not in (dense.last_filters or {}), \
+            "source_path 不应进入 retrieval filters（用 partial，Chroma where exact 会杀零）"
+
+    def test_collection_passthrough_when_metadata_absent(
+        self, query_processor, rrf_fusion,
+    ):
+        """N1 核心回归：chunk metadata 无 collection 字段时，collection filter 不杀零。
+
+        真实场景 metadata 不写 collection；修复前 post-fusion 读
+        metadata['collection'] 得 None != 'api-docs' → 全排除 → 杀零。
+        修复后 collection 放行（continue），结果正常返回。
+        """
+        results_no_collection = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="Azure 配置",
+                metadata={"source_path": "docs/azure.pdf"},  # 无 collection
+            ),
+            RetrievalResult(
+                chunk_id="b", score=0.85, text="OpenAI 指南",
+                metadata={"source_path": "docs/openai.pdf"},  # 无 collection
+            ),
+        ]
+        dense = MockDenseRetriever(results=results_no_collection)
+        sparse = MockSparseRetriever(results=results_no_collection)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        results = hybrid.search(
+            "Azure", top_k=10, filters={"collection": "api-docs"}
+        )
+        assert len(results) > 0, "collection filter 不应在 metadata 无该字段时杀零"
+
+
+# =============================================================================
+# N3: source_path 用 partial 语义（post-fusion 子串匹配）
+# =============================================================================
+
+class TestSourcePathPartialN3:
+    """N3: source_path 两层一致 —— pre-fusion 剥离（Dense 不下推 exact）+
+    post-fusion partial 子串匹配。锁定 partial 行为，防回归为 exact。
+    """
+
+    def test_source_path_partial_match(self, query_processor, rrf_fusion):
+        """post-fusion source_path partial：子串命中。"""
+        results = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="Azure 配置",
+                metadata={"source_path": "docs/azure-setup.pdf"},
+            ),
+            RetrievalResult(
+                chunk_id="b", score=0.85, text="其他",
+                metadata={"source_path": "docs/other.pdf"},
+            ),
+        ]
+        dense = MockDenseRetriever(results=results)
+        sparse = MockSparseRetriever(results=results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        out = hybrid.search(
+            "Azure", top_k=10, filters={"source_path": "azure"}
+        )
+        assert [r.chunk_id for r in out] == ["a"], \
+            "partial：只命中 source_path 含 'azure' 子串的 chunk"
+
+    def test_source_path_partial_no_match(self, query_processor, rrf_fusion):
+        """post-fusion source_path partial：子串不命中 → 排除。"""
+        results = [
+            RetrievalResult(
+                chunk_id="a", score=0.9, text="Azure",
+                metadata={"source_path": "docs/azure.pdf"},
+            ),
+        ]
+        dense = MockDenseRetriever(results=results)
+        sparse = MockSparseRetriever(results=results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense, sparse_retriever=sparse,
+            fusion=rrf_fusion,
+        )
+        out = hybrid.search(
+            "Azure", top_k=10, filters={"source_path": "nonexistent"}
+        )
+        assert out == [], "子串不命中应排除全部"
+
+
+# =============================================================================
+# ②A: generic filter（custom_field:xxx）对缺字段的 chunk 排除
+# =============================================================================
+
+class TestGenericMissingFieldExclude:
+    """②A: generic filter 的正确语义 —— chunk 缺该字段时排除（与 tags、
+    Chroma where 天然行为一致）。_matches_filters else 分支
+    ``metadata.get(key) != value``，缺字段时 None != value → 排除。
+    锁定行为，防回归。
+    """
+
+    def _make_hybrid(self, query_processor, rrf_fusion):
+        return HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=MockDenseRetriever(results=[]),
+            sparse_retriever=MockSparseRetriever(results=[]),
+            fusion=rrf_fusion,
+        )
+
+    def test_generic_present_match(self, query_processor, rrf_fusion):
+        """chunk 有字段且值匹配 → 保留。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"author": "张三"}, {"author": "张三"}
+        ) is True
+
+    def test_generic_present_mismatch(self, query_processor, rrf_fusion):
+        """chunk 有字段但值不匹配 → 排除。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"author": "李四"}, {"author": "张三"}
+        ) is False
+
+    def test_generic_missing_field_excluded(self, query_processor, rrf_fusion):
+        """chunk 缺该字段 → 排除（filter 正确语义，非放行）。"""
+        hybrid = self._make_hybrid(query_processor, rrf_fusion)
+        assert hybrid._matches_filters(
+            {"other_field": "x"}, {"author": "张三"}
+        ) is False

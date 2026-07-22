@@ -183,11 +183,14 @@ class TestFilterParsing:
         assert "configuration" in result.keywords
     
     def test_generic_filter(self):
-        """Test generic filter key:value syntax."""
+        """N4: 未识别 key:value 不当 filter，当普通查询文本回到 keywords。"""
         processor = QueryProcessor()
         result = processor.process("custom_field:custom_value search")
-        
-        assert result.filters.get("custom_field") == "custom_value"
+
+        # 未识别 key 不再产生 generic filter
+        assert "custom_field" not in result.filters
+        assert result.filters == {}
+        # search 仍是关键词
         assert "search" in result.keywords
     
     def test_disable_filter_parsing(self):
@@ -200,6 +203,61 @@ class TestFilterParsing:
         assert len(result.filters) == 0
         # collection:docs should be treated as text
         assert "collection" in result.keywords or "docs" in result.keywords
+
+
+class TestFilterAllowlistN4:
+    """N4: filter 解析收口——自然语言 word:value 不再被误解析为 filter。"""
+
+    def test_natural_language_colon_not_filter(self):
+        """自然语言冒号（时间 / URL / 中文）不当 filter。"""
+        processor = QueryProcessor()
+
+        r = processor.process("会议 12:30 下午")
+        assert r.filters == {}
+        assert "会议" in r.keywords
+
+        r = processor.process("官网 https://example.com 地址")
+        assert r.filters == {}
+        assert "官网" in r.keywords
+
+        r = processor.process("Azure:服务端 配置")
+        assert r.filters == {}
+        assert "Azure" in r.keywords or "服务端" in r.keywords
+
+    def test_windows_path_not_filter(self):
+        """Windows 路径 c:\\... 不当 filter（c 已不是别名）。"""
+        processor = QueryProcessor()
+        r = processor.process(r"路径 c:\Users\test 文档")
+        assert r.filters == {}
+        assert "路径" in r.keywords or "文档" in r.keywords
+
+    def test_single_letter_alias_disabled(self):
+        """单字母别名 c/s/t 已删除，不再当 filter。"""
+        processor = QueryProcessor()
+        for q in ("c:docs", "s:readme", "t:pdf"):
+            r = processor.process(q)
+            assert r.filters == {}, f"{q} 不应产生 filter"
+
+    def test_multiletter_alias_still_works(self):
+        """多字母别名 col/src 仍工作。"""
+        processor = QueryProcessor()
+
+        r = processor.process("col:docs Azure")
+        assert r.filters.get("collection") == "docs"
+        assert "Azure" in r.keywords
+
+        r = processor.process("src:readme.md content")
+        assert r.filters.get("source_path") == "readme.md"
+
+    def test_whitelist_filters_still_parsed(self):
+        """白名单 4 类回归保护（全名语法）。"""
+        processor = QueryProcessor()
+        r = processor.process("collection:docs type:pdf source:r.md tag:a,b")
+        assert r.filters.get("collection") == "docs"
+        assert r.filters.get("doc_type") == "pdf"
+        assert r.filters.get("source_path") == "r.md"
+        assert "a" in r.filters["tags"]
+        assert "b" in r.filters["tags"]
 
 
 class TestEdgeCases:
