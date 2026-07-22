@@ -33,6 +33,8 @@
 | D-019 | 2026-07-21 | docling 图片抽取从 get_images 改为 bbox 区域渲染（矢量图支持） | 采纳 | feat/docling-figure-render |
 | D-020 | 2026-07-21 | vision_llm 切本地 ollama（llava-phi3）并默认启用 | 采纳 | 9905e3f |
 | D-021 | 2026-07-21 | tags 过滤改为 post-fusion-only（剥离 pre-fusion + 读逗号字符串，存储层不动） | 采纳 | fix/tags-filter |
+| D-022 | 2026-07-22 | filter pre/post 双层语义对齐：collection/source_path 走 post-fusion（修 N1 杀零 + N3 不一致） | 采纳 | 5a12c8b, 4a3e96d |
+| D-023 | 2026-07-22 | QueryProcessor filter 解析收口：未识别 word:value 不当 generic filter + 删单字母别名（修 N4） | 采纳 | 548d508, 7763c04 |
 
 ---
 
@@ -156,6 +158,24 @@
 - **理由**：tags 是 list 语义，Chroma 对字符串字段做不了 "list contains"，下推到 Chroma where 无意义反而杀零；post-fusion 在 Python 内存里 list 语义天然好处理。存储层不动 → 向后兼容已摄取数据，免重新摄取。"tags 是 post-fusion 专属"语义集中在 query 层一处，存储层保持通用。范围选 A 是因为内联 `tag:` 入口已存在，修通即兑现能力，MCP 显式参数是 YAGNI。
 - **代价 / 现状**：实现完成在分支 `fix/tags-filter`（commits `53c948b` + `389c293` + `bb16e85`），6 个新测试（5 单元 + 1 端到端），final review 判定 **Ready to merge**，待合并。**限制**：tags 过滤依赖 `metadata_filter_post=True`（默认 True）；若设 False 则 tags 静默失效（已在 `HybridSearchConfig` docstring 标注）；标量 filter（collection/doc_type/source_path）不受影响，仍可 pre-fusion。
 - **关联**：[hybrid_search.py](src/core/query_engine/hybrid_search.py)；`PDF处理链路分析.md` §5 G4。与 [[D-018]] 形成对照——同根问题"Chroma 存不了复合类型"，D-018 把图片**移出** Chroma 到 SQLite，本决策把 tags **留在** Chroma（逗号字符串）但只 post-fusion 消费。G5–G7 留后续。
+
+### D-022 filter pre/post 双层语义对齐（修 N1 + N3）
+- **状态**：采纳。
+- **背景**：QueryProcessor 支持内联 filter 语法（`collection:`/`source:` 等），但 ① `collection` 是物理隔离维度（parser/chunker/enricher/upserter 都不写进 metadata），下推 Chroma `where` 必杀零，post-fusion 对缺失 key 也排除 → Dense+Sparse 双杀零（N1）；② `source_path` Dense 下推用 exact、post-fusion 用 partial，同一条结果两层语义不一致（N3）。
+- **备选**：① `source_path` 语义 partial vs exact；② generic 缺字段 排除 vs 保留；③ N4 是否纳入本批。详见 [spec](docs/superpowers/specs/2026-07-22-filter-pre-post-alignment-design.md) §3。
+- **决策**：① source_path=**partial**（两层一致）；② generic 缺字段=**排除**；③ N4 拆单独议题。新增模块常量 `POST_ONLY_FILTERS = {tags, collection, source_path}`，在 `_run_dense_retrieval` 内剥离（不进 Chroma where，保 sparse 选 BM25 index 的 collection 路径）；post-fusion `_matches_filters` 对 `collection` 改 `continue` 放行（⚠️ 不能用 `return True`，会跳过后续 key 检查）。
+- **理由**：物理隔离已保证 collection 隔离，不该再进 where；长路径 exact 几乎无法命中，partial 零增量成本；同一 key 两层语义必须一致，否则一层通过另一层干掉。
+- **代价 / 现状**：改动集中在 `hybrid_search.py`（`search()`/`_run_dense_retrieval`/`_matches_filters`/`HybridSearchConfig` docstring），`QueryProcessor`/`ChromaStore`/`settings` 零改动。43 测试全绿；e2e dogfood（`default` collection, ollama nomic-embed-text）：`algorithm collection:default` → DENSE=20 + FUSION=10（修复前双杀零=0）。commits `5a12c8b` + `4a3e96d`，final review (opus) Ready to merge。
+- **关联**：[hybrid_search.py](src/core/query_engine/hybrid_search.py)；[spec](docs/superpowers/specs/2026-07-22-filter-pre-post-alignment-design.md) / [plan](docs/superpowers/plans/2026-07-22-filter-pre-post-alignment.md)；`PDF处理链路分析.md` §5 N1+N3。与 [[D-021]] 同根（Chroma where 表达力不足 → post-fusion 兜底），本决策把 collection/source_path 也归入 post-only。N4 解析层根因见 [[D-023]]。
+
+### D-023 QueryProcessor filter 解析收口（修 N4）
+- **状态**：采纳。
+- **背景**：N4 = 自然语言里随处可见的 `word:value`（`Azure:服务端`、`12:30`、`https://...`、`c:\Users\...`）被无边界正则 `(\w+):([^\s]+)` 匹配 + `else` 分支当 generic filter；因对不上任何真实 metadata 字段 → Dense `where` 杀零 + 关键词被 `sub` 删除 + post-fusion 排除，三路全废。generic filter 是"死功能"（metadata 字段固定，用户写的 custom key 永远命不中）。
+- **备选**：① 删 generic 白名单化 / ② 保留 generic + 启发式排除（治标）/ ③ 改显式语法标记（破坏现有语法）；白名单来源 静态 vs config；范围 现有 4 类 vs 扩展；单字母别名 `c`/`s`/`t` 删否。详见 [spec](docs/superpowers/specs/2026-07-22-n4-filter-parsing-allowlist-design.md) §3。
+- **决策**：**① 删 generic（白名单化）+ 静态写死 + 现有 4 类 + 删单字母别名**。`_extract_filters` 重构为 `finditer` 逐段处理：白名单 key（`collection/col`、`type/doc_type`、`source/src`、`tag/tags`）收 filter 并从 query 文本删除；未识别 `word:value` 原样保留为查询文本参与分词。正则 `FILTER_PATTERN` 不动。
+- **理由**：generic 是死功能，放弃零损失；filter key 与下游处理逻辑强绑定（collection→物理隔离、tags→post-fusion、source_path→partial、doc_type→exact where），加新 key 不止改配置还得改下游分支，所以白名单是代码契约而非配置；单字母别名是 N4 近亲（`c:\路径`、`s:3`），多字母别名够便捷。
+- **代价 / 现状**：改动集中在 `query_processor.py`（`_extract_filters` 重构 + 删别名 tuple），`hybrid_search`/`chroma_store`/`settings` 零改动（下游 generic else 成死代码，防御性保留不清理，spec §7）。43 测试全绿；e2e：`Azure:服务端 配置` → `filters=(none)` + FUSION=10（修复前 `filters={"azure":"服务端"}` 杀零=0）。commits `548d508` + `7763c04`（keyword 断言回归保险），final review (opus) Ready to merge。
+- **关联**：[query_processor.py](src/core/query_engine/query_processor.py)；[spec](docs/superpowers/specs/2026-07-22-n4-filter-parsing-allowlist-design.md) / [plan](docs/superpowers/plans/2026-07-22-n4-filter-parsing-allowlist.md)；`PDF处理链路分析.md` §5 N4。与 [[D-021]]/[[D-022]] 同根（filter 收口系统化的第三层——解析层），从源头不让 generic filter 产生，下游不再误触发。
 
 ---
 
