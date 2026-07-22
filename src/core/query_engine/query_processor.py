@@ -167,44 +167,46 @@ class QueryProcessor:
     
     def _extract_filters(self, query: str) -> tuple[Dict[str, Any], str]:
         """Extract filter syntax from query.
-        
-        Supports syntax like: "collection:api-docs keyword1 keyword2"
-        
+
+        只有白名单 key（collection/col、type/doc_type、source/src、tag/tags）
+        产生 filter 并从 query 文本删除；未识别的 word:value 当普通查询文本
+        原样保留（参与分词），不再走 generic filter 分支（N4 收口）。
+
         Args:
             query: Normalized query string
-            
+
         Returns:
             Tuple of (filters dict, query without filter syntax)
         """
         if not self.config.enable_filter_parsing:
             return {}, query
-        
+
         filters: Dict[str, Any] = {}
-        
-        # Find all filter patterns
-        matches = FILTER_PATTERN.findall(query)
-        for key, value in matches:
-            # Support common filter keys
+        kept: List[str] = []
+        last_end = 0
+
+        for m in FILTER_PATTERN.finditer(query):
+            key, value = m.group(1), m.group(2)
             key_lower = key.lower()
-            if key_lower in ("collection", "col", "c"):
+            # 匹配段之前的文本原样保留
+            kept.append(query[last_end:m.start()])
+
+            if key_lower in ("collection", "col"):
                 filters["collection"] = value
-            elif key_lower in ("type", "doc_type", "t"):
+            elif key_lower in ("type", "doc_type"):
                 filters["doc_type"] = value
-            elif key_lower in ("source", "src", "s"):
+            elif key_lower in ("source", "src"):
                 filters["source_path"] = value
             elif key_lower in ("tag", "tags"):
-                # Tags can be comma-separated
-                if "tags" not in filters:
-                    filters["tags"] = []
-                filters["tags"].extend(value.split(","))
+                filters.setdefault("tags", []).extend(value.split(","))
             else:
-                # Generic filter
-                filters[key] = value
-        
-        # Remove filter patterns from query
-        query_without_filters = FILTER_PATTERN.sub("", query).strip()
-        query_without_filters = " ".join(query_without_filters.split())
-        
+                # 未识别 key：N4 收口，不当 filter，原样保留为查询文本
+                kept.append(m.group(0))
+            last_end = m.end()
+        kept.append(query[last_end:])
+
+        query_without_filters = " ".join("".join(kept).split())
+
         return filters, query_without_filters
     
     def _tokenize(self, text: str) -> List[str]:
