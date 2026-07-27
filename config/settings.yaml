@@ -6,7 +6,7 @@
 # LLM Configuration
 # =============================================================================
 llm:
-  provider: "zhipu"
+  provider: "zhipu"  # 默认 LLM = 智谱 GLM（OpenAI-compatible）；决策见 DEV_CHANGELOG D-013
   model: "glm-4-flash"
   deployment_name: ""
   azure_endpoint: ""
@@ -20,7 +20,7 @@ llm:
 # Embedding Configuration
 # =============================================================================
 embedding:
-  provider: "ollama"  # local Ollama; base_url from $OLLAMA_BASE_URL (default http://localhost:11434)
+  provider: "ollama"  # 本地 Ollama（nomic-embed-text）；决策见 D-014。base_url from $OLLAMA_BASE_URL（default http://localhost:11434），httpx 需 trust_env=False 绕系统代理
   model: "nomic-embed-text"
   dimensions: 768  # nomic-embed-text output dim; reported to vector store via get_dimension
   azure_endpoint: ""
@@ -33,8 +33,8 @@ embedding:
 # Vision LLM Configuration (Ollama local)
 # =============================================================================
 vision_llm:
-  enabled: true
-  provider: "ollama"
+  enabled: true  # 默认启用（D-020）；ImageCaptioner 据此决定是否调 Vision LLM
+  provider: "ollama"  # 本地 Vision LLM；决策见 D-020
   model: "llava-phi3:3.8b"
   azure_endpoint: ""
   deployment_name: ""
@@ -101,7 +101,7 @@ ingestion:
   # Parser Configuration (K1) — pluggable document parser (renamed from loader).
   # Switching formats (pdf | pdf_text | docx | ...) is config-only via ParserFactory.
   parser:
-    provider: "docling"  # Docling (DocLayNet + TableFormer) layout + table extraction
+    provider: "docling"  # 默认 parser = Docling（DocLayNet + TableFormer）；矢量图 bbox 渲染见 D-019，降级链 docling→pdf_text 见 D-011
     extract_images: true  # extract embedded images, insert [IMAGE: id] placeholders
 
   chunk_refiner:

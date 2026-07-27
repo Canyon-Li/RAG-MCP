@@ -8,6 +8,19 @@ A modular, pluggable RAG (Retrieval-Augmented Generation) server that exposes kn
 
 The README is explicit that this is **not** a hardened production system: bugs are expected, and two modules (Custom Evaluator, Cross-Encoder Reranker) are scaffolded but not fully tested.
 
+## Document scope (what lives where)
+
+This file describes **stable architecture only** — mechanisms that hold across config changes (four-layer design, Factory+Registry pattern, pipeline flow, idempotency, trace, MCP stdio constraints). It intentionally carries **no volatile facts**; those live in their own sources of truth:
+
+| Volatile info | Where it actually lives |
+|---|---|
+| Registered provider names (per layer) | [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md) (dated snapshot) or run `<Factory>.list_providers()` |
+| Current default provider / model | [config/settings.yaml](config/settings.yaml) |
+| Capability boundaries & decision rationale | [DEV_CHANGELOG.md](DEV_CHANGELOG.md) (e.g. D-011 ~ D-023) |
+| Runtime environment (conda env, proxy) | [DEV_CHANGELOG.md](DEV_CHANGELOG.md) + global memory |
+
+When you find yourself adding a provider name, a default model, or a "currently supports X" claim to this file — **stop and redirect it to the table's target instead**. That discipline is what keeps this file from rotting as the codebase evolves.
+
 ## Commands
 
 Install (editable, with dev tools):
@@ -21,7 +34,7 @@ python -m src.mcp_server.server
 ```
 > ⚠️ `main.py` is a stub that only loads settings; it does **not** start the MCP server. The real entry point is `src/mcp_server/server.py:main`. The `mcp-server` console-script in `pyproject.toml` (`main:main`) is misleading — prefer the module form above, which is what the integration/e2e tests shell out to.
 
-Ingest documents (format is config-driven via `ingestion.parser.provider` — built-in providers: `pdf`, `pdf_text`, `pdf_table`, `docx`):
+Ingest documents (format is config-driven via `ingestion.parser.provider`; registered parsers listed in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md) or via `ParserFactory.list_providers()`):
 ```powershell
 python scripts/ingest.py --path <file-or-dir> --collection <name> [--force] [--dry-run]
 ```
@@ -64,7 +77,7 @@ Four-layer design, all wired by config. Read `DEV_SPEC.md` §5 for the full diag
 ```
 MCP Server (interface)  ─ src/mcp_server/      tools exposed over JSON-RPC stdio
 Core (business logic)   ─ src/core/            query engine, response builder, trace
-Storage                 ─ data/db/             Chroma + BM25 + image store + trace logs
+Storage                 ─ data/db/             Chroma + BM25 + ImageStorage SQLite + trace logs
 Libs (pluggable)        ─ src/libs/            Factory pattern for every swappable backend
 Ingestion pipeline      ─ src/ingestion/       load → split → transform → embed → upsert
 Observability           ─ src/observability/   trace context + Streamlit dashboard + eval
@@ -79,7 +92,7 @@ Both pipelines take an explicit `TraceContext` (`src/core/trace/`) that records 
 
 ### Config-driven everything
 
-`config/settings.yaml` is the single source of truth. It is parsed into frozen dataclasses in [src/core/settings.py](src/core/settings.py), which also exposes `resolve_path()` — paths are anchored to `REPO_ROOT` (computed from `__file__`, **CWD-independent**), so scripts run correctly from any working directory. Validation is fail-fast (`SettingsError`).
+`config/settings.yaml` is the single source of truth for **which backends are active** (LLM / embedding / vision / parser / rerank / vector store). It is parsed into frozen dataclasses in [src/core/settings.py](src/core/settings.py), which also exposes `resolve_path()` — paths are anchored to `REPO_ROOT` (computed from `__file__`, **CWD-independent**), so scripts run correctly from any working directory. Validation is fail-fast (`SettingsError`).
 
 ### Pluggable backends via Factory + Registry
 
@@ -92,13 +105,15 @@ How to add a provider (new LLM / new doc format / …) and the live provider reg
 
 ### Multimodal = Image-to-Text (no CLIP)
 
-Images are extracted by the loader, saved to `data/images/{collection}/`, and captioned by a Vision LLM during transform; the caption text is **stitched into the chunk body** so plain-text retrieval surfaces images. Hit chunks return images via `metadata.image_refs` → file read → Base64 in the MCP `content` array.
+Images are extracted during parse, saved to `data/images/{collection}/`, and captioned by a Vision LLM during transform; the caption text is **stitched into the chunk body** so plain-text retrieval surfaces images. **Structured image data (id / path / page / caption) lives in ImageStorage SQLite (`data/db/image_index.db`), decoupled from Chroma metadata** (D-018) — hit chunks resolve images via ImageStorage (`ImageCaptioner` calls `image_storage.get_image_meta` / `set_caption`), then file read → Base64 into the MCP `content` array.
+
+Image extraction method is **parser-specific** (capability boundary — see DEV_CHANGELOG D-018 / D-019): the `docling` parser renders bbox regions to raster (captures vector-drawn figures); other parsers use PyMuPDF `get_images()` (embedded raster only).
 
 ### Idempotency & storage layout (all gitignored under `data/` + `logs/`)
 
 - File-level: SHA256 in SQLite at `data/db/ingestion_history.db` → unchanged files are skipped (zero-cost incremental ingest). `--force` bypasses this.
 - Chunk-level: deterministic `chunk_id = {doc_id}_{index:04d}_{content_hash8}`; upserts are idempotent.
-- Stores: Chroma at `data/db/chroma/` (dense + sparse vectors + payload), BM25 pickle index at `data/db/bm25/{collection}/`, image files at `data/images/`, traces at `logs/traces.jsonl`.
+- Stores: Chroma at `data/db/chroma/` (dense + sparse vectors + payload), BM25 **JSON** index at `data/db/bm25/{collection}/{collection}_bm25.json` (`json.dump` with atomic temp-then-rename — **not** pickle), image files at `data/images/` + structured image metadata in ImageStorage SQLite at `data/db/image_index.db` (D-018 — image data is **not** stored in Chroma), traces at `logs/traces.jsonl`.
 
 ## Conventions and gotchas
 
@@ -106,7 +121,7 @@ Images are extracted by the loader, saved to `data/images/{collection}/`, and ca
 - **Graceful degradation is a design rule.** LLM-backed transforms (`chunk_refiner`, `metadata_enricher`) fall back to rule-based logic when `use_llm: false` or the LLM call fails — they must not block the pipeline. Reranker failures fall back to RRF order; rerank/evaluation are **disabled by default** (`rerank.enabled: false`, `evaluation.enabled: false`).
 - **Windows console + Chinese output.** CLI scripts set `sys.stdout/stderr` to UTF-8 wrappers on `win32`; match this if adding scripts that print non-ASCII.
 - **Tests insert repo root onto `sys.path`** (`conftest.py` and each script), so `from src.…` imports work without installing the package. Integration/e2e tests shell out to `python -m src.mcp_server.server` as a subprocess.
-- **Adding a new document format:** subclass `BaseParser` + `ParserFactory.register_provider()` (built-in: `pdf`, `pdf_text`, `pdf_table`, `docx`); the rest of the pipeline is format-agnostic. Details in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
+- **Adding a new document format:** subclass `BaseParser` + `ParserFactory.register_provider()`; the rest of the pipeline is format-agnostic. Details & registered parsers in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
 - **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`) — edit there, not in code.
 - **Design decisions & pitfalls live in [DEV_CHANGELOG.md](DEV_CHANGELOG.md)** — check it before changing providers / parsers / runtime env to avoid repeating past traps (e.g. local-service httpx needs `trust_env=False`; use conda, not `.venv`; completion models can't be wrapped in a chat template).
 
