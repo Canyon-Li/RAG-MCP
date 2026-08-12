@@ -18,6 +18,8 @@ Then verify with `<Factory>.list_providers()` or by reading the registration blo
 
 ## Base classes, factories, and currently-registered providers
 
+> 🧭 **评估期聚焦提示**:评估(`scripts/evaluate.py` + `src/observability/evaluation/` + `src/core/query_engine/`)用的是已 ingest 的数据,**不重新 parse、不触碰本表任何 provider**。评估时无需关注 parser 注册表——它对评估结果是透明的。当前运行时只激活 `docling` 一条 parser 链,其余 provider 是可插拔备选,仅作切换/降级兜底用。
+
 > ⚠️ **The "Registered providers" column below is a point-in-time snapshot (@ 2026-07-27), NOT a live query.** Authoritative source: run `<Factory>.list_providers()` (or `LLMFactory.list_vision_providers()` for Vision LLM), or read the `_register_builtin_providers()` / `_register_vision_providers()` block in each factory. Providers are added frequently — **do not trust the table without verifying against code.**
 
 | Layer | Base class | Factory | Registered providers (snapshot @ 2026-07-27) |
