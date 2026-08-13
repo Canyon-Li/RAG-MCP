@@ -199,6 +199,8 @@ class CompositeEvaluator(BaseEvaluator):
 
         from src.libs.evaluator.evaluator_factory import EvaluatorFactory
 
+        all_metrics = list(getattr(evaluation, "metrics", []))
+
         evaluators: List[BaseEvaluator] = []
         for backend_name in backends:
             backend_name = str(backend_name).strip().lower()
@@ -206,6 +208,13 @@ class CompositeEvaluator(BaseEvaluator):
                 continue  # avoid infinite recursion / no-ops
 
             try:
+                # Route only the metrics this backend supports. Without this,
+                # the full metrics list is passed to every sub-evaluator and the
+                # ones whose SUPPORTED_METRICS doesn't include a foreign metric
+                # reject construction (e.g. CustomEvaluator rejects ragas metrics).
+                supported = CompositeEvaluator._backend_supported_metrics(backend_name)
+                routed = [m for m in all_metrics if m in supported] if supported else all_metrics
+
                 # Create a mock settings with provider overridden
                 from unittest.mock import MagicMock
 
@@ -213,7 +222,7 @@ class CompositeEvaluator(BaseEvaluator):
                 sub_eval = MagicMock()
                 sub_eval.enabled = True
                 sub_eval.provider = backend_name
-                sub_eval.metrics = getattr(evaluation, "metrics", [])
+                sub_eval.metrics = routed
                 sub_eval.backends = []  # prevent recursion
                 sub_settings.evaluation = sub_eval
 
@@ -228,3 +237,23 @@ class CompositeEvaluator(BaseEvaluator):
                 )
 
         return evaluators
+
+    @staticmethod
+    def _backend_supported_metrics(backend_name: str) -> set:
+        """Resolve a backend provider's SUPPORTED_METRICS without instantiating it.
+
+        Returns an empty set if the class can't be peeked (e.g. lazy-loaded and
+        its dependency is missing) — callers then pass the full metric list and
+        let the backend's own validation raise a clear error.
+        """
+        from src.libs.evaluator.evaluator_factory import EvaluatorFactory
+
+        cls = EvaluatorFactory._PROVIDERS.get(backend_name)
+        if cls is None and backend_name in EvaluatorFactory._LAZY_PROVIDERS:
+            try:
+                cls = EvaluatorFactory._LAZY_PROVIDERS[backend_name]()
+            except ImportError:
+                return set()
+        if cls is not None and hasattr(cls, "SUPPORTED_METRICS"):
+            return set(cls.SUPPORTED_METRICS)
+        return set()

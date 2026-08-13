@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -144,6 +144,7 @@ class EvaluationSettings:
     enabled: bool
     provider: str
     metrics: List[str]
+    backends: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -309,6 +310,7 @@ class Settings:
                 enabled=_require_bool(evaluation, "enabled", "evaluation"),
                 provider=_require_str(evaluation, "provider", "evaluation"),
                 metrics=[str(item) for item in _require_list(evaluation, "metrics", "evaluation")],
+                backends=tuple(str(b) for b in evaluation.get("backends", [])),
             ),
             observability=ObservabilitySettings(
                 log_level=_require_str(observability, "log_level", "observability"),

@@ -73,12 +73,16 @@ rerank:
 # Evaluation Configuration
 # =============================================================================
 evaluation:
-  enabled: false
-  provider: "custom"
+  enabled: true
+  provider: "composite"
+  backends:
+    - "custom"
+    - "ragas"
   metrics:
-    - "hit_rate"
-    - "mrr"
-    - "faithfulness"
+    - "source_recall_at_k"
+    - "source_precision_at_k"
+    - "context_relevance"
+    - "context_precision"
 
 # =============================================================================
 # Observability Configuration
