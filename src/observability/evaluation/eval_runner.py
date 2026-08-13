@@ -46,7 +46,7 @@ class GoldenTestCase:
             query=data["query"],
             expected_chunk_ids=data.get("expected_chunk_ids", []),
             expected_sources=data.get("expected_sources", []),
-            reference_answer=data.get("reference_answer"),
+            reference_answer=data.get("reference", data.get("reference_answer")),
         )
 
 
