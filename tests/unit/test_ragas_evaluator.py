@@ -312,11 +312,71 @@ class TestRagasMetricRouting:
         ):
             mock_cr.return_value = fake_metric
             scores = evaluator._run_ragas(
-                query="q", contexts=["ctx text"], answer="",
+                query="q", contexts=["ctx text"], reference=None,
             )
 
         assert scores["context_relevance"] == 0.8
         mock_cr.return_value.score.assert_called_once()
+
+    def test_context_precision_uses_reference_not_response(self) -> None:
+        """context_precision must pass reference= (not response=) — matches
+        ContextPrecisionWithReference's real signature in ragas 0.4.3."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_precision"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = 0.6
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.ContextPrecision"
+        ) as mock_cp, patch.object(
+            evaluator, "_build_wrappers", return_value=(MagicMock(), MagicMock())
+        ):
+            mock_cp.return_value = fake_metric
+            scores = evaluator._run_ragas(
+                query="q",
+                contexts=["ctx text"],
+                reference="the reference answer",
+            )
+
+        assert scores["context_precision"] == 0.6
+        # Verify reference= was passed, response= was NOT
+        call_kwargs = mock_cp.return_value.score.call_args.kwargs
+        assert call_kwargs.get("reference") == "the reference answer"
+        assert "response" not in call_kwargs
+
+    def test_context_precision_skipped_without_reference(self) -> None:
+        """No reference → context_precision returns 0.0 (not crash)."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_precision"]
+        evaluator.settings = MagicMock()
+
+        with patch(
+            "ragas.metrics.collections.ContextPrecision"
+        ) as mock_cp, patch.object(
+            evaluator, "_build_wrappers", return_value=(MagicMock(), MagicMock())
+        ):
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference=None,
+            )
+
+        assert scores["context_precision"] == 0.0
+        mock_cp.return_value.score.assert_not_called()
+
+    def test_extract_reference_from_ground_truth(self) -> None:
+        """_extract_reference reads ground_truth['reference']."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        assert RagasEvaluator._extract_reference({"reference": "ans"}) == "ans"
+        assert RagasEvaluator._extract_reference({}) is None
+        assert RagasEvaluator._extract_reference(None) is None
 
     def test_no_answer_required_for_context_relevance(self) -> None:
         """evaluate() should NOT raise when generated_answer is empty."""

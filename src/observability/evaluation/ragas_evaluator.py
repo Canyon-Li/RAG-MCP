@@ -168,14 +168,17 @@ class RagasEvaluator(BaseEvaluator):
         self.validate_query(query)
         self.validate_retrieved_chunks(retrieved_chunks)
 
-        # Note: this system does not generate answers (retrieval + citation only).
-        # context_relevance needs no answer; context_precision receives query as
-        # response fallback (see _run_ragas). So empty answer is allowed.
+        # This system does not generate answers (retrieval + citation only).
+        # context_relevance needs no answer. context_precision needs a reference
+        # answer (ContextPrecisionWithReference); it is read from
+        # ground_truth["reference"], forwarded by EvalRunner from the golden
+        # set's reference_answer. Empty generated_answer is allowed.
 
         contexts = self._extract_texts(retrieved_chunks)
+        reference = self._extract_reference(ground_truth)
 
         try:
-            result = self._run_ragas(query, contexts, generated_answer)
+            result = self._run_ragas(query, contexts, reference)
         except Exception as exc:
             logger.error("Ragas evaluation failed: %s", exc, exc_info=True)
             raise RuntimeError(f"Ragas evaluation failed: {exc}") from exc
@@ -188,14 +191,14 @@ class RagasEvaluator(BaseEvaluator):
         self,
         query: str,
         contexts: List[str],
-        answer: str,
+        reference: Optional[str],
     ) -> Dict[str, float]:
         """Execute Ragas collections metrics and return normalised scores.
 
-        Ragas 0.4+ collections metrics use per-metric ``score()`` instead of
-        the legacy ``evaluate()`` pipeline.  Each metric has its own signature:
+        Ragas 0.4+ collections metrics use per-metric ``score()``.  Signatures:
         - ContextRelevance: (user_input, retrieved_contexts)
-        - ContextPrecision: (user_input, response, retrieved_contexts)
+        - ContextPrecision (= ContextPrecisionWithReference):
+          (user_input, retrieved_contexts, reference)
         """
         from ragas.metrics.collections import ContextRelevance, ContextPrecision
 
@@ -212,12 +215,20 @@ class RagasEvaluator(BaseEvaluator):
                 )
             elif metric_name == CONTEXT_PRECISION:
                 m = ContextPrecision(llm=llm)
-                # This system does not generate answers; pass response as the
-                # query text so the judge ranks contexts by query relevance.
+                # ContextPrecisionWithReference ranks retrieved contexts by
+                # whether each is needed to answer the query, judged against the
+                # reference answer. Requires a non-empty reference.
+                if not reference:
+                    logger.warning(
+                        "context_precision skipped: no reference answer provided "
+                        "(golden set missing 'reference')."
+                    )
+                    scores[metric_name] = 0.0
+                    continue
                 result = m.score(
                     user_input=query,
-                    response=answer or query,
                     retrieved_contexts=contexts,
+                    reference=reference,
                 )
             else:
                 continue
@@ -225,6 +236,20 @@ class RagasEvaluator(BaseEvaluator):
             scores[metric_name] = float(result.value) if result.value is not None else 0.0
 
         return scores
+
+    @staticmethod
+    def _extract_reference(ground_truth: Optional[Any]) -> Optional[str]:
+        """Pull the reference answer out of ground_truth.
+
+        EvalRunner forwards the golden set's reference_answer as
+        ``ground_truth["reference"]``. Returns None when absent.
+        """
+        if ground_truth is None:
+            return None
+        if isinstance(ground_truth, dict):
+            ref = ground_truth.get("reference")
+            return str(ref) if ref else None
+        return None
 
     def _build_wrappers(self) -> tuple:
         """Build Ragas LLM and Embedding wrappers from project settings.
@@ -245,7 +270,14 @@ class RagasEvaluator(BaseEvaluator):
         judge_provider = self._resolve_judge_provider()
         if judge_provider == "ollama":
             base_url = self._resolve_ollama_base_url()
-            client = AsyncOpenAI(base_url=base_url, api_key="ollama")
+            # trust_env=False bypasses the system proxy intercepting localhost
+            # traffic (D-014). AsyncOpenAI reads proxy env vars by default; an
+            # explicit httpx client is the robust way to disable that.
+            import httpx
+            http_client = httpx.AsyncClient(trust_env=False, timeout=300.0)
+            client = AsyncOpenAI(
+                base_url=base_url, api_key="ollama", http_client=http_client,
+            )
             llm = llm_factory(self._JUDGE_MODEL, client=client, max_tokens=8192)
             # Ollama embeddings — reuse same endpoint.
             # nomic-embed-text is the project's embedding model.
