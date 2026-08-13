@@ -27,33 +27,35 @@ class TestQueryProcessorBasic:
         """Test simple English query keyword extraction."""
         processor = QueryProcessor()
         result = processor.process("Azure OpenAI configuration")
-        
+
         assert result.original_query == "Azure OpenAI configuration"
-        assert "Azure" in result.keywords
-        assert "OpenAI" in result.keywords
-        assert "configuration" in result.keywords
+        # Query-side keywords are now stemmed+lowered (shared tokenizer).
+        # Azure→azur, OpenAI→openai, configuration→configur
+        assert "azur" in result.keywords
+        assert "openai" in result.keywords
+        assert "configur" in result.keywords
         assert isinstance(result.filters, dict)
     
     def test_simple_chinese_query(self):
         """Test simple Chinese query keyword extraction."""
         processor = QueryProcessor()
         result = processor.process("配置 Azure OpenAI")
-        
+
         assert result.original_query == "配置 Azure OpenAI"
         assert "配置" in result.keywords
-        assert "Azure" in result.keywords
-        assert "OpenAI" in result.keywords
+        # English keywords are stemmed+lowered: Azure→azur, OpenAI→openai
+        assert "azur" in result.keywords
+        assert "openai" in result.keywords
     
     def test_mixed_language_query(self):
         """Test mixed Chinese-English query."""
         processor = QueryProcessor()
         result = processor.process("如何配置 Azure OpenAI embedding 模型")
-        
-        # Note: Simple tokenizer treats continuous Chinese as single token
-        # So "如何配置" is one token, not split into "如何" + "配置"
-        assert "Azure" in result.keywords
-        assert "OpenAI" in result.keywords
-        assert "embedding" in result.keywords
+
+        # English keywords are stemmed+lowered
+        assert "azur" in result.keywords
+        assert "openai" in result.keywords
+        assert "embed" in result.keywords
         assert "模型" in result.keywords
         # Keywords should be non-empty (acceptance criteria)
         assert len(result.keywords) > 0
@@ -79,15 +81,15 @@ class TestStopwordFiltering:
         """Test that English stopwords are filtered."""
         processor = QueryProcessor()
         result = processor.process("how to configure the Azure API")
-        
+
         # Stopwords should be filtered
         assert "how" not in result.keywords
         assert "to" not in result.keywords
         assert "the" not in result.keywords
-        # Content words should remain
-        assert "configure" in result.keywords
-        assert "Azure" in result.keywords
-        assert "API" in result.keywords
+        # Content words remain, but stemmed+lowered: configure→configur, Azure→azur, API→api
+        assert "configur" in result.keywords
+        assert "azur" in result.keywords
+        assert "api" in result.keywords
     
     def test_custom_stopwords(self):
         """Test custom stopwords configuration."""
@@ -105,11 +107,12 @@ class TestStopwordFiltering:
         """Test adding stopwords dynamically."""
         processor = QueryProcessor()
         processor.add_stopwords({"newstop"})
-        
+
         result = processor.process("newstop important")
-        
+
         assert "newstop" not in result.keywords
-        assert "important" in result.keywords
+        # important → import (Porter stem); _filter_keywords checks stem form
+        assert "import" in result.keywords
     
     def test_remove_stopwords(self):
         """Test removing stopwords dynamically."""
@@ -130,10 +133,11 @@ class TestFilterParsing:
         """Test collection filter parsing."""
         processor = QueryProcessor()
         result = processor.process("collection:api-docs Azure configuration")
-        
+
         assert result.filters.get("collection") == "api-docs"
-        assert "Azure" in result.keywords
-        assert "configuration" in result.keywords
+        # English keywords stemmed+lowered: Azure→azur, configuration→configur
+        assert "azur" in result.keywords
+        assert "configur" in result.keywords
         # Filter syntax should not appear in keywords
         assert "collection" not in result.keywords
         assert "api-docs" not in result.keywords
@@ -142,18 +146,20 @@ class TestFilterParsing:
         """Test collection short syntax (col:)."""
         processor = QueryProcessor()
         result = processor.process("col:docs Azure")
-        
+
         assert result.filters.get("collection") == "docs"
-        assert "Azure" in result.keywords
+        # English keywords stemmed+lowered: Azure→azur
+        assert "azur" in result.keywords
     
     def test_type_filter(self):
         """Test doc_type filter parsing."""
         processor = QueryProcessor()
         result = processor.process("type:pdf search query")
-        
+
         assert result.filters.get("doc_type") == "pdf"
         assert "search" in result.keywords
-        assert "query" in result.keywords
+        # query→queri (Porter stem), stemmed+lowered
+        assert "queri" in result.keywords
     
     def test_source_filter(self):
         """Test source path filter parsing."""
@@ -176,11 +182,12 @@ class TestFilterParsing:
         """Test multiple filters in one query."""
         processor = QueryProcessor()
         result = processor.process("collection:docs type:pdf Azure configuration")
-        
+
         assert result.filters.get("collection") == "docs"
         assert result.filters.get("doc_type") == "pdf"
-        assert "Azure" in result.keywords
-        assert "configuration" in result.keywords
+        # English keywords stemmed+lowered: Azure→azur, configuration→configur
+        assert "azur" in result.keywords
+        assert "configur" in result.keywords
     
     def test_generic_filter(self):
         """N4: 未识别 key:value 不当 filter，当普通查询文本回到 keywords。"""
@@ -197,12 +204,12 @@ class TestFilterParsing:
         """Test disabling filter parsing."""
         config = QueryProcessorConfig(enable_filter_parsing=False)
         processor = QueryProcessor(config)
-        
+
         result = processor.process("collection:docs Azure")
-        
+
         assert len(result.filters) == 0
-        # collection:docs should be treated as text
-        assert "collection" in result.keywords or "docs" in result.keywords
+        # collection:docs treated as text; stemmed: collection→collect, docs→doc
+        assert "collect" in result.keywords or "doc" in result.keywords
 
 
 class TestFilterAllowlistN4:
@@ -222,7 +229,8 @@ class TestFilterAllowlistN4:
 
         r = processor.process("Azure:服务端 配置")
         assert r.filters == {}
-        assert "Azure" in r.keywords or "服务端" in r.keywords
+        # Azure→azur after stemming
+        assert "azur" in r.keywords or "服务端" in r.keywords
 
     def test_windows_path_not_filter(self):
         """Windows 路径 c:\\... 不当 filter（c 已不是别名）。"""
@@ -244,7 +252,8 @@ class TestFilterAllowlistN4:
 
         r = processor.process("col:docs Azure")
         assert r.filters.get("collection") == "docs"
-        assert "Azure" in r.keywords
+        # Azure→azur after stemming
+        assert "azur" in r.keywords
 
         r = processor.process("src:readme.md content")
         assert r.filters.get("source_path") == "readme.md"
@@ -292,28 +301,32 @@ class TestEdgeCases:
         """Test query with special characters."""
         processor = QueryProcessor()
         result = processor.process("Azure-OpenAI API_key configuration")
-        
-        # Hyphenated and underscored words should be handled
-        assert any("Azure" in kw or "OpenAI" in kw for kw in result.keywords)
-        assert any("API" in kw or "key" in kw for kw in result.keywords)
-        assert "configuration" in result.keywords
+
+        # Hyphenated and underscored words split by shared tokenizer;
+        # English words are stemmed+lowered.
+        assert any("azur" in kw or "openai" in kw for kw in result.keywords)
+        assert any("api" in kw or "key" in kw for kw in result.keywords)
+        # configuration→configur (stemmed)
+        assert "configur" in result.keywords
     
     def test_numbers_in_query(self):
         """Test query with numbers."""
         processor = QueryProcessor()
         result = processor.process("GPT4 text-embedding-3-small")
-        
-        assert "GPT4" in result.keywords
-        # Handle hyphenated model names
-        assert any("embedding" in kw.lower() for kw in result.keywords)
+
+        # GPT4 is mixed alphanumeric → not stemmed, but lowercased → gpt4
+        assert "gpt4" in result.keywords
+        # Handle hyphenated model names; embedding→embed (stemmed)
+        assert any("embed" in kw for kw in result.keywords)
     
     def test_duplicate_keywords(self):
         """Test duplicate keyword handling."""
         processor = QueryProcessor()
         result = processor.process("Azure Azure azure AZURE")
-        
-        # Should deduplicate (case-insensitive)
-        azure_count = sum(1 for kw in result.keywords if kw.lower() == "azure")
+
+        # Should deduplicate; shared tokenizer lowercases + deduplicates,
+        # so all variants collapse to single "azur" (stemmed).
+        azure_count = sum(1 for kw in result.keywords if kw == "azur")
         assert azure_count == 1
     
     def test_very_long_query(self):
@@ -358,12 +371,13 @@ class TestProcessedQueryContract:
         """Test ProcessedQuery can be serialized to dict."""
         processor = QueryProcessor()
         result = processor.process("collection:docs Azure test")
-        
+
         data = result.to_dict()
-        
+
         assert isinstance(data, dict)
         assert data["original_query"] == "collection:docs Azure test"
-        assert "Azure" in data["keywords"]
+        # Azure→azur (stemmed+lowered)
+        assert "azur" in data["keywords"]
         assert "test" in data["keywords"]
         assert data["filters"]["collection"] == "docs"
     
@@ -390,9 +404,10 @@ class TestFactoryFunction:
         """Test factory with default settings."""
         processor = create_query_processor()
         result = processor.process("test Azure")
-        
+
         assert isinstance(processor, QueryProcessor)
-        assert "Azure" in result.keywords
+        # Azure→azur (stemmed+lowered)
+        assert "azur" in result.keywords
     
     def test_factory_with_custom_stopwords(self):
         """Test factory with custom stopwords."""
@@ -455,37 +470,73 @@ class TestChineseTextProcessing:
 
 class TestKeywordsNonEmpty:
     """Test that keywords are non-empty for valid queries (acceptance criteria)."""
-    
+
     def test_keywords_non_empty_english(self):
         """Test keywords non-empty for English query."""
         processor = QueryProcessor()
         result = processor.process("configure Azure API")
-        
+
         # Per acceptance criteria: keywords should be non-empty
         assert len(result.keywords) > 0
-    
+
     def test_keywords_non_empty_chinese(self):
         """Test keywords non-empty for Chinese query."""
         processor = QueryProcessor()
         result = processor.process("配置数据库")
-        
+
         assert len(result.keywords) > 0
-    
+
     def test_keywords_non_empty_mixed(self):
         """Test keywords non-empty for mixed query."""
         processor = QueryProcessor()
         result = processor.process("Azure 配置")
-        
+
         assert len(result.keywords) > 0
-    
+
     def test_filters_is_dict(self):
         """Test filters is always a dict (acceptance criteria)."""
         processor = QueryProcessor()
-        
+
         # Without filters
         result1 = processor.process("simple query")
         assert isinstance(result1.filters, dict)
-        
+
         # With filters
         result2 = processor.process("collection:docs query")
         assert isinstance(result2.filters, dict)
+
+
+class TestCrossLayerTokenization:
+    """Cross-layer consistency: query tokens must be a subset of index terms."""
+
+    def test_query_and_index_tokenization_match(self):
+        """同一文本,query 侧 tokenized 后的关键词 ⊆ 索引侧 term。
+        这是 BM25 召回的充要条件(spec 纪律级约束)。"""
+        from src.ingestion.embedding.sparse_encoder import SparseEncoder
+        from src.core.types import Chunk
+
+        text = "the optimization of neural networks"
+        encoder = SparseEncoder()
+        stats = encoder.encode([Chunk(id="t", text=text, metadata={"source_path": "dummy"})])[0]
+        index_terms = set(stats["term_frequencies"])
+
+        processor = QueryProcessor()
+        result = processor.process(text)
+        query_terms = set(result.keywords) | {k.lower() for k in result.keywords}
+
+        # 查询侧关键词必须在索引侧 term 集合里
+        missing = query_terms - index_terms
+        # 允许 query 侧 _filter_keywords 因 max_keywords 截断,但不能出现"索引没有"的词
+        assert not missing, f"query keywords not in index terms: {missing}"
+
+    def test_query_side_stems_english(self):
+        """query 侧英文也应 stem,否则查 optimization 召不回索引里的 optim 词干。"""
+        from src.ingestion.embedding.sparse_encoder import SparseEncoder
+        from src.core.types import Chunk
+
+        processor = QueryProcessor()
+        result = processor.process("optimization")
+        # 经 stem 后的形态应能与索引侧一致(具体词干由 Porter 决定)
+        encoder = SparseEncoder()
+        idx = set(encoder.encode([Chunk(id="t", text="optimization", metadata={"source_path": "dummy"})])[0]["term_frequencies"])
+        assert set(k.lower() for k in result.keywords) & idx, "query stem != index stem"
