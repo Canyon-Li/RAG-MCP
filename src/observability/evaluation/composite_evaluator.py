@@ -33,14 +33,15 @@ class CompositeEvaluator(BaseEvaluator):
     Example::
 
         composite = CompositeEvaluator(evaluators=[
-            CustomEvaluator(metrics=["hit_rate", "mrr"]),
-            RagasEvaluator(metrics=["faithfulness"]),
+            CustomEvaluator(metrics=["source_recall_at_k", "source_precision_at_k"]),
+            RagasEvaluator(metrics=["context_relevance", "context_precision"]),
         ])
         metrics = composite.evaluate(
             query="test", retrieved_chunks=[...],
-            generated_answer="...", ground_truth=[...]
+            ground_truth={"sources": ["paper.pdf"], "reference": "..."},
         )
-        # metrics == {"hit_rate": 1.0, "mrr": 0.5, "faithfulness": 0.92}
+        # metrics == {"source_recall_at_k": 1.0, "source_precision_at_k": 0.5,
+        #             "context_relevance": 0.95, "context_precision": 0.97}
     """
 
     def __init__(
@@ -172,12 +173,13 @@ class CompositeEvaluator(BaseEvaluator):
               enabled: true
               provider: composite
               backends:
-                - ragas
                 - custom
+                - ragas
               metrics:
-                - faithfulness
-                - hit_rate
-                - mrr
+                - source_recall_at_k
+                - source_precision_at_k
+                - context_relevance
+                - context_precision
 
         Args:
             settings: Application settings.
@@ -199,6 +201,8 @@ class CompositeEvaluator(BaseEvaluator):
 
         from src.libs.evaluator.evaluator_factory import EvaluatorFactory
 
+        all_metrics = list(getattr(evaluation, "metrics", []))
+
         evaluators: List[BaseEvaluator] = []
         for backend_name in backends:
             backend_name = str(backend_name).strip().lower()
@@ -206,6 +210,13 @@ class CompositeEvaluator(BaseEvaluator):
                 continue  # avoid infinite recursion / no-ops
 
             try:
+                # Route only the metrics this backend supports. Without this,
+                # the full metrics list is passed to every sub-evaluator and the
+                # ones whose SUPPORTED_METRICS doesn't include a foreign metric
+                # reject construction (e.g. CustomEvaluator rejects ragas metrics).
+                supported = CompositeEvaluator._backend_supported_metrics(backend_name)
+                routed = [m for m in all_metrics if m in supported] if supported else all_metrics
+
                 # Create a mock settings with provider overridden
                 from unittest.mock import MagicMock
 
@@ -213,7 +224,7 @@ class CompositeEvaluator(BaseEvaluator):
                 sub_eval = MagicMock()
                 sub_eval.enabled = True
                 sub_eval.provider = backend_name
-                sub_eval.metrics = getattr(evaluation, "metrics", [])
+                sub_eval.metrics = routed
                 sub_eval.backends = []  # prevent recursion
                 sub_settings.evaluation = sub_eval
 
@@ -228,3 +239,23 @@ class CompositeEvaluator(BaseEvaluator):
                 )
 
         return evaluators
+
+    @staticmethod
+    def _backend_supported_metrics(backend_name: str) -> set:
+        """Resolve a backend provider's SUPPORTED_METRICS without instantiating it.
+
+        Returns an empty set if the class can't be peeked (e.g. lazy-loaded and
+        its dependency is missing) — callers then pass the full metric list and
+        let the backend's own validation raise a clear error.
+        """
+        from src.libs.evaluator.evaluator_factory import EvaluatorFactory
+
+        cls = EvaluatorFactory._PROVIDERS.get(backend_name)
+        if cls is None and backend_name in EvaluatorFactory._LAZY_PROVIDERS:
+            try:
+                cls = EvaluatorFactory._LAZY_PROVIDERS[backend_name]()
+            except ImportError:
+                return set()
+        if cls is not None and hasattr(cls, "SUPPORTED_METRICS"):
+            return set(cls.SUPPORTED_METRICS)
+        return set()

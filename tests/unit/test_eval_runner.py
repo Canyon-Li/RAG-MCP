@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
+from src.libs.evaluator.custom_evaluator import CustomEvaluator
 from src.observability.evaluation.eval_runner import (
     EvalRunner,
     EvalReport,
@@ -129,7 +130,10 @@ class TestEvalRunner:
         assert len(report.query_results) == 2
         assert report.aggregate_metrics["hit_rate"] == 1.0
         assert report.aggregate_metrics["mrr"] == 0.5
-        assert report.total_elapsed_ms > 0
+        # total_elapsed_ms is a real wall-clock delta; on a fast stub it may
+        # read 0.0. Assert non-negative (monotonic guarantee) rather than > 0
+        # to avoid a flaky timing assertion.
+        assert report.total_elapsed_ms >= 0
 
     def test_run_with_hybrid_search(self, tmp_path: Path) -> None:
         f = tmp_path / "g.json"
@@ -226,3 +230,53 @@ class TestGoldenTestSetFixture:
         assert len(cases) >= 1
         for tc in cases:
             assert tc.query.strip(), "Query must be non-empty"
+
+
+# ── Tests: EvalRunner source ground truth forwarding ────────────────
+
+
+class TestEvalRunnerSourceGT:
+    """Tests that EvalRunner forwards expected_sources to the evaluator."""
+
+    def test_source_ground_truth_forwarded(self) -> None:
+        """EvalRunner should include expected_sources in ground_truth dict."""
+        from src.observability.evaluation.eval_runner import (
+            EvalRunner, GoldenTestCase,
+        )
+
+        # A fake hybrid_search returning one chunk with a known source
+        fake_chunk = {"id": "c1", "source": "paperA.pdf", "text": "some text"}
+        fake_search = MagicMock()
+        fake_search.search.return_value = [fake_chunk]
+
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k"], source_top_k=5,
+        )
+        runner = EvalRunner(
+            settings=None, hybrid_search=fake_search, evaluator=evaluator,
+        )
+
+        # Write a tiny golden set to a temp file
+        import json, tempfile, os
+        golden = {
+            "test_cases": [
+                {
+                    "query": "which paper?",
+                    "expected_sources": ["paperA.pdf"],
+                    "expected_chunk_ids": [],
+                }
+            ]
+        }
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as f:
+            json.dump(golden, f)
+            tmp_path = f.name
+
+        try:
+            report = runner.run(tmp_path, top_k=5)
+        finally:
+            os.unlink(tmp_path)
+
+        # source_recall should be 1.0 because paperA.pdf was retrieved
+        assert report.query_results[0].metrics["source_recall_at_k"] == 1.0

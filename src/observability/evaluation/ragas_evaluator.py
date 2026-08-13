@@ -1,19 +1,40 @@
 """Ragas-based evaluator for RAG quality assessment.
 
 This evaluator wraps the Ragas framework to compute LLM-as-Judge metrics:
-- Faithfulness: Does the answer stick to the retrieved context?
-- Answer Relevancy: Is the answer relevant to the query?
+- Context Relevance: Are the retrieved contexts relevant to the query?
 - Context Precision: Are the retrieved chunks relevant and well-ordered?
 
 Design Principles:
 - Pluggable: Implements BaseEvaluator interface, swappable via factory.
-- Config-Driven: LLM/Embedding backend read from settings.yaml.
+- Judge-decoupled: The judge LLM is NOT the retrieval pipeline's settings.llm —
+  it is configured via env vars (RAGAS_JUDGE_PROVIDER / RAGAS_JUDGE_MODEL /
+  OLLAMA_BASE_URL) and defaults to a local Ollama model, so swapping retrieval
+  backends never affects the judge.
 - Graceful Degradation: Clear ImportError if ragas not installed.
 """
 
 from __future__ import annotations
 
+# ── ragas 0.4.3 import workaround ──────────────────────────────────
+# ragas eagerly imports langchain_community.chat_models.vertexai during its
+# own import; that package is not installed here. Inject a stub so the import
+# succeeds. (Mirrors the agentic-rag-for-dummies evaluation notebook.)
+import sys as _sys
+import types as _types
+try:  # pragma: no cover — only triggers when langchain_community is missing vertexai
+    import langchain_community.chat_models.vertexai  # type: ignore  # noqa: F401
+except ModuleNotFoundError:  # pragma: no cover
+    if "langchain_community.chat_models.vertexai" not in _sys.modules:
+        _stub = _types.ModuleType("langchain_community.chat_models.vertexai")
+
+        class _ChatVertexAI:  # minimal stub
+            pass
+
+        _stub.ChatVertexAI = _ChatVertexAI  # type: ignore
+        _sys.modules["langchain_community.chat_models.vertexai"] = _stub
+
 import logging
+import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -21,11 +42,10 @@ from src.libs.evaluator.base_evaluator import BaseEvaluator
 logger = logging.getLogger(__name__)
 
 # Metric name constants
-FAITHFULNESS = "faithfulness"
-ANSWER_RELEVANCY = "answer_relevancy"
+CONTEXT_RELEVANCE = "context_relevance"
 CONTEXT_PRECISION = "context_precision"
 
-SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION}
+SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION}
 
 
 def _import_ragas() -> None:
@@ -43,11 +63,10 @@ class RagasEvaluator(BaseEvaluator):
     """Evaluator that uses the Ragas framework for LLM-as-Judge metrics.
 
     Ragas does NOT require ground-truth labels.  It uses an LLM to judge
-    the quality of the generated answer against the retrieved context.
+    the quality of the retrieved context against the query.
 
     Supported metrics:
-        - faithfulness: Measures factual consistency with context.
-        - answer_relevancy: Measures how relevant the answer is to the query.
+        - context_relevance: Measures relevance of retrieved contexts to query.
         - context_precision: Measures relevance/ordering of retrieved chunks.
 
     Example::
@@ -56,10 +75,42 @@ class RagasEvaluator(BaseEvaluator):
         metrics = evaluator.evaluate(
             query="What is RAG?",
             retrieved_chunks=[{"id": "c1", "text": "RAG is ..."}],
-            generated_answer="RAG stands for ...",
         )
-        # metrics == {"faithfulness": 0.95, "answer_relevancy": 0.88, ...}
+        # metrics == {"context_relevance": 0.95, "context_precision": 0.88, ...}
     """
+
+    # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
+    # Configured via env vars so the judge is stable across provider swaps.
+    _JUDGE_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+    _DEFAULT_JUDGE_MODEL = "llama3"
+
+    @staticmethod
+    def _resolve_judge_provider() -> str:
+        """Which provider family to use for the judge LLM.
+
+        Reads RAGAS_JUDGE_PROVIDER (default 'ollama'). Set to 'azure' or
+        'openai' to use a cloud judge instead.
+        """
+        return os.environ.get("RAGAS_JUDGE_PROVIDER", "ollama").lower()
+
+    @classmethod
+    def _resolve_judge_model(cls) -> str:
+        """Which model to use for the judge LLM.
+
+        Reads RAGAS_JUDGE_MODEL at call time (default llama3). Read at call
+        time — not class-definition time — so it can be hot-swapped, matching
+        _resolve_judge_provider's pattern.
+        """
+        return os.environ.get("RAGAS_JUDGE_MODEL", cls._DEFAULT_JUDGE_MODEL)
+
+    def _resolve_ollama_base_url(self) -> str:
+        """Ollama endpoint: OLLAMA_BASE_URL env > default, with /v1 suffix."""
+        env_url = os.environ.get("OLLAMA_BASE_URL", "").rstrip("/")
+        if not env_url:
+            return self._JUDGE_DEFAULT_BASE_URL
+        if env_url.endswith("/v1"):
+            return env_url
+        return f"{env_url}/v1"
 
     def __init__(
         self,
@@ -115,8 +166,11 @@ class RagasEvaluator(BaseEvaluator):
         Args:
             query: The user query string.
             retrieved_chunks: Retrieved chunks (dicts with 'text' key or strings).
-            generated_answer: The generated answer text. Required for Ragas.
-            ground_truth: Ignored by Ragas (not needed for LLM-as-Judge).
+            generated_answer: Unused — this system does not generate answers.
+                Retained for BaseEvaluator interface compatibility.
+            ground_truth: Consumed for context_precision — the golden set's
+                reference answer is read from ``ground_truth["reference"]``
+                (forwarded by EvalRunner). context_relevance needs no ground truth.
             trace: Optional TraceContext for observability.
             **kwargs: Additional parameters.
 
@@ -124,21 +178,22 @@ class RagasEvaluator(BaseEvaluator):
             Dictionary mapping metric names to float scores (0.0 – 1.0).
 
         Raises:
-            ValueError: If query/chunks are invalid or generated_answer is missing.
+            ValueError: If query/chunks are invalid.
         """
         self.validate_query(query)
         self.validate_retrieved_chunks(retrieved_chunks)
 
-        if not generated_answer or not generated_answer.strip():
-            raise ValueError(
-                "RagasEvaluator requires a non-empty 'generated_answer'. "
-                "Ragas uses LLM-as-Judge and needs the answer text to evaluate."
-            )
+        # This system does not generate answers (retrieval + citation only).
+        # context_relevance needs no answer. context_precision needs a reference
+        # answer (ContextPrecisionWithReference); it is read from
+        # ground_truth["reference"], forwarded by EvalRunner from the golden
+        # set's reference_answer. Empty generated_answer is allowed.
 
         contexts = self._extract_texts(retrieved_chunks)
+        reference = self._extract_reference(ground_truth)
 
         try:
-            result = self._run_ragas(query, contexts, generated_answer)
+            result = self._run_ragas(query, contexts, reference)
         except Exception as exc:
             logger.error("Ragas evaluation failed: %s", exc, exc_info=True)
             raise RuntimeError(f"Ragas evaluation failed: {exc}") from exc
@@ -151,39 +206,44 @@ class RagasEvaluator(BaseEvaluator):
         self,
         query: str,
         contexts: List[str],
-        answer: str,
+        reference: Optional[str],
     ) -> Dict[str, float]:
         """Execute Ragas collections metrics and return normalised scores.
 
-        Ragas 0.4+ collections metrics use per-metric ``score()`` instead of
-        the legacy ``evaluate()`` pipeline.  Each metric has its own signature:
-        - Faithfulness / ContextPrecision: (user_input, response, retrieved_contexts)
-        - AnswerRelevancy: (user_input, response)
+        Ragas 0.4+ collections metrics use per-metric ``score()``.  Signatures:
+        - ContextRelevance: (user_input, retrieved_contexts)
+        - ContextPrecision (= ContextPrecisionWithReference):
+          (user_input, retrieved_contexts, reference)
         """
-        from ragas.metrics.collections import (
-            Faithfulness,
-            AnswerRelevancy,
-            ContextPrecisionWithoutReference,
-        )
+        from ragas.metrics.collections import ContextRelevance, ContextPrecision
 
-        # Build LLM / Embedding wrappers from settings
+        # Build LLM / Embedding wrappers from settings (ollama judge by default)
         llm, embeddings = self._build_wrappers()
 
         scores: Dict[str, float] = {}
 
         for metric_name in self._metric_names:
-            if metric_name == FAITHFULNESS:
-                m = Faithfulness(llm=llm)
+            if metric_name == CONTEXT_RELEVANCE:
+                m = ContextRelevance(llm=llm)
                 result = m.score(
-                    user_input=query, response=answer, retrieved_contexts=contexts,
+                    user_input=query, retrieved_contexts=contexts,
                 )
-            elif metric_name == ANSWER_RELEVANCY:
-                m = AnswerRelevancy(llm=llm, embeddings=embeddings)
-                result = m.score(user_input=query, response=answer)
             elif metric_name == CONTEXT_PRECISION:
-                m = ContextPrecisionWithoutReference(llm=llm)
+                m = ContextPrecision(llm=llm)
+                # ContextPrecisionWithReference ranks retrieved contexts by
+                # whether each is needed to answer the query, judged against the
+                # reference answer. Requires a non-empty reference.
+                if not reference:
+                    logger.warning(
+                        "context_precision skipped: no reference answer provided "
+                        "(golden set missing 'reference')."
+                    )
+                    scores[metric_name] = 0.0
+                    continue
                 result = m.score(
-                    user_input=query, response=answer, retrieved_contexts=contexts,
+                    user_input=query,
+                    retrieved_contexts=contexts,
+                    reference=reference,
                 )
             else:
                 continue
@@ -191,6 +251,20 @@ class RagasEvaluator(BaseEvaluator):
             scores[metric_name] = float(result.value) if result.value is not None else 0.0
 
         return scores
+
+    @staticmethod
+    def _extract_reference(ground_truth: Optional[Any]) -> Optional[str]:
+        """Pull the reference answer out of ground_truth.
+
+        EvalRunner forwards the golden set's reference_answer as
+        ``ground_truth["reference"]``. Returns None when absent.
+        """
+        if ground_truth is None:
+            return None
+        if isinstance(ground_truth, dict):
+            ref = ground_truth.get("reference")
+            return str(ref) if ref else None
+        return None
 
     def _build_wrappers(self) -> tuple:
         """Build Ragas LLM and Embedding wrappers from project settings.
@@ -207,6 +281,27 @@ class RagasEvaluator(BaseEvaluator):
 
         if self.settings is None:
             raise ValueError("Settings required to create LLM for Ragas evaluation")
+
+        judge_provider = self._resolve_judge_provider()
+        if judge_provider == "ollama":
+            base_url = self._resolve_ollama_base_url()
+            # trust_env=False bypasses the system proxy intercepting localhost
+            # traffic (D-014). AsyncOpenAI reads proxy env vars by default; an
+            # explicit httpx client is the robust way to disable that.
+            import httpx
+            http_client = httpx.AsyncClient(trust_env=False, timeout=300.0)
+            client = AsyncOpenAI(
+                base_url=base_url, api_key="ollama", http_client=http_client,
+            )
+            llm = llm_factory(self._resolve_judge_model(), client=client, max_tokens=8192)
+            # Ollama embeddings — reuse same endpoint.
+            # nomic-embed-text is the project's embedding model.
+            embeddings = OpenAIEmbeddings(
+                model="nomic-embed-text", client=client,
+            )
+            return llm, embeddings
+
+        # Fallback: original cloud-judge logic (azure/openai) below
 
         # ── LLM ──
         llm_cfg = self.settings.llm
