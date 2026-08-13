@@ -3,22 +3,85 @@
   "version": "2.0",
   "test_cases": [
     {
-      "query": "PLACEHOLDER — replace with real query about paper 1",
-      "expected_sources": ["paper_1.pdf"],
+      "query": "In the 2023 'New record in the number of qubits for a quantum implementation of AES' paper, how many qubits are required by the synthesized AES-128, AES-192, and AES-256 quantum circuits, and what prior record did they beat?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf"
+      ],
       "expected_chunk_ids": [],
-      "reference": "PLACEHOLDER — short reference answer (English, judge input only)."
+      "reference": "The paper synthesizes AES-128/-192/-256 quantum circuits with 264/328/392 qubits, setting a new record. This improves on the previous best of 270/334/398 qubits reported by Li et al. (2022), and approaches the theoretical optimum of 256/320/384."
     },
     {
-      "query": "PLACEHOLDER — replace with real query about paper 2",
-      "expected_sources": ["paper_2.pdf"],
+      "query": "In the 2023 AES qubit-record paper, what automated tool is used to build the quantum circuit for the multiplicative inversion in F24, and why is the inversion computed in F24 rather than directly in F28?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf"
+      ],
       "expected_chunk_ids": [],
-      "reference": "PLACEHOLDER — short reference answer (English, judge input only)."
+      "reference": "The tool LIGHTER-R is used. The multiplicative inversion in F28, which is the main part of the S-box, is converted into multiplicative inversion (and multiplication) in F24. LIGHTER-R can generate an optimal-qubit circuit for the F24 inversion because its search space is small enough; it cannot directly handle the F28 inversion due to the much larger search space."
     },
     {
-      "query": "PLACEHOLDER — replace with real query about paper 3",
-      "expected_sources": ["paper_3.pdf"],
+      "query": "According to the 2023 qubit-record paper, how many qubits does its S-box circuit for C4 (|a> -> |S(a)>) require, and how is it obtained differently from prior approaches?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf"
+      ],
       "expected_chunk_ids": [],
-      "reference": "PLACEHOLDER — short reference answer (English, judge input only)."
+      "reference": "The C4 S-box circuit requires 16 qubits, down from 22 in prior studies (Li et al. 2022; Huang & Sun 2022). Unlike previous work that connected C1 (|a>|0> -> |a>|S(a)>) and C3 (|a>|S(a)> -> |0>|S(a)>) to get C4, the paper synthesizes the in-place circuit |a> -> |p^-1> directly using an in-place multiplication technique (In-Mul)."
+    },
+    {
+      "query": "What do the W-type and T-type quantum circuits mean in the 2022 'Novel quantum circuit implementation of Advanced Encryption Standard with low costs' paper, and what resource does each one minimize?",
+      "expected_sources": [
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "W-type ('W' for width) circuits aim to minimize the number of qubits (circuit width); T-type circuits aim to minimize the T-depth, which determines runtime in fault-tolerant Clifford+T implementations. The paper presents both a W-type circuit (fewest qubits) and a T-type circuit (lowest T-depth) for AES."
+    },
+    {
+      "query": "In the 2022 Science China paper on AES quantum circuits, what qubit counts are achieved for AES-128, AES-192, and AES-256, and what was the previous baseline they improved upon?",
+      "expected_sources": [
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The W-type circuits require 270/334/398 qubits for AES-128/-192/-256. This reduced the prior best from 400/640/768 qubits (Wang et al. 2022 for AES-128 at 400; Zou et al. 2020 at 512/640/768)."
+    },
+    {
+      "query": "What T-depth do the AES-128, AES-192, and AES-256 quantum circuits achieve in the 2022 T-type AES paper, and what was the prior T-depth value from Jaques et al.?",
+      "expected_sources": [
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The T-type circuits achieve a T-depth of 80/80/84 for AES-128/-192/-256. This is a reduction from the 120/120/126 T-depth reported by Jaques et al. (2020), obtained via a new S-box circuit with T-depth 4 instead of 6."
+    },
+    {
+      "query": "What is the 'straight-line' method proposed in the 2022 AES paper, and how many qubits does it require for the round-function iteration of AES-128/-192/-256?",
+      "expected_sources": [
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The straight-line method is a round-function-iteration strategy proposed to reduce qubit count. It uses the C1 S-box for round R1 and the C3 S-box (|a> -> |S(a)>) for the remaining rounds, requiring 142/142/142 qubits for AES-128/-192/-256, down from 256/256/256 in Zou et al.'s improved zig-zag method."
+    },
+    {
+      "query": "In the 2022 AES quantum-circuit paper, which composite-field architectures are used to implement the S-box, and what is the field polynomial of F24?",
+      "expected_sources": [
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The paper uses two composite-field architectures: F(24)2 (isomorphic to F28, with subfield F24) and the tower field F(22)2 (with subfield F22). The field polynomial of F24 is x^4 + x + 1, and F(24)2 uses x^2 + x + lambda where lambda = x^3 + x^2 + x in F24."
+    },
+    {
+      "query": "How do the AES qubit counts in the 2023 qubit-record paper compare to those in the 2022 Science China AES paper, and what key technique drove the further reduction?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf",
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The 2023 paper further reduces AES-128/-192/-256 to 264/328/392 qubits, improving on the 2022 paper's 270/334/398. The reduction is driven by using LIGHTER-R to build the F24 multiplicative-inversion circuit for the S-box (C1/C2 at 20 qubits) and by introducing a direct 16-qubit in-place C4 S-box circuit (|a> -> |S(a)>), instead of the 2022 paper's 22-qubit C1/C2/C3 circuits."
+    },
+    {
+      "query": "In the 2023 qubit-record paper, what optimization is applied to the uncomputation step of the S-box C1 circuit, and what effect does it have on gate counts and Toffoli depth?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "Because (p17)^-1 = (p^-1)^17, the ancilla (p17)^-1 is removed by applying only the inverse circuit U†p17, without needing F24 inv†1. This completes uncomputation with fewer Toffoli and CNOT gates and a lower Toffoli depth, so the C1 S-box circuit uses 20 qubits (vs 22) with 44 Toffoli / 197 CNOT / Toffoli depth 32, fewer than prior work."
     }
   ]
 }
