@@ -65,13 +65,20 @@ class OllamaLLM(BaseLLM):
         self.model = settings.llm.model
         self.default_temperature = settings.llm.temperature
         self.default_max_tokens = settings.llm.max_tokens
-        
-        # Base URL: explicit > env var > default
-        self.base_url = (
-            base_url 
-            or os.environ.get("OLLAMA_BASE_URL") 
+
+        # Base URL: explicit param > settings.llm.base_url > OLLAMA_BASE_URL env > default.
+        # NOTE: this provider uses Ollama's NATIVE /api/chat endpoint (not the
+        # OpenAI-compatible /v1/chat/completions that vision/embedding use), so a
+        # trailing /v1 in the configured base_url is stripped — settings.yaml's
+        # base_url is shared with vision_llm which DOES need /v1, so tolerate both.
+        configured_base_url = getattr(settings.llm, "base_url", None)
+        raw_base_url = (
+            base_url
+            or configured_base_url
+            or os.environ.get("OLLAMA_BASE_URL")
             or self.DEFAULT_BASE_URL
         )
+        self.base_url = raw_base_url.rstrip("/").removesuffix("/v1")
         
         # Timeout: explicit > default
         self.timeout = timeout or self.DEFAULT_TIMEOUT
@@ -204,7 +211,10 @@ class OllamaLLM(BaseLLM):
         }
         
         try:
-            with httpx.Client(timeout=self.timeout) as client:
+            # trust_env=False: bypass system proxy so localhost traffic reaches
+            # Ollama directly (D-014 — user's proxy intercepts localhost → 502).
+            # Mirrors ollama_vision_llm / ollama_embedding.
+            with httpx.Client(timeout=self.timeout, trust_env=False) as client:
                 response = client.post(url, json=payload, headers=headers)
                 
                 if response.status_code != 200:

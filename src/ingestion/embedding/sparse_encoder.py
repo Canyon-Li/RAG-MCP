@@ -12,9 +12,9 @@ Design Principles:
 
 from typing import List, Dict, Optional, Any
 from collections import Counter
-import re
 
-import jieba
+from src.core.text.tokenizer import tokenize
+from src.core.query_engine.query_processor import ENGLISH_STOPWORDS
 
 from src.core.types import Chunk
 
@@ -35,14 +35,14 @@ class SparseEncoder:
         }
     
     Design:
-    - Tokenization: Simple whitespace + lowercasing (can be enhanced later)
-    - Stop Words: None by default (can add in future iterations)
+    - Tokenization: Shared tokenizer (jieba for Chinese, Porter stem + ENGLISH_STOPWORDS for English)
+    - Stop Words: ENGLISH_STOPWORDS via shared tokenizer (pre-stem filtering)
     - Deterministic: Same chunk text always produces same statistics
-    
+
     Example:
         >>> from src.core.types import Chunk
         >>> encoder = SparseEncoder()
-        >>> 
+        >>>
         >>> chunks = [Chunk(id="1", text="Hello world hello", metadata={})]
         >>> stats = encoder.encode(chunks)
         >>> stats[0]["term_frequencies"]["hello"]  # 2
@@ -100,7 +100,7 @@ class SparseEncoder:
             ... ]
             >>> stats = encoder.encode(chunks)
             >>> len(stats) == len(chunks)  # True
-            >>> stats[0]["term_frequencies"]["machine"]  # 1
+            >>> "machin" in stats[0]["term_frequencies"]  # stemmed from "machine"
             >>> stats[1]["doc_length"]  # 3
         """
         if not chunks:
@@ -132,41 +132,27 @@ class SparseEncoder:
         return results
     
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text into terms.
-        
-        Uses jieba for Chinese text segmentation and regex for English.
-        This ensures consistent tokenization with the query-side
-        (QueryProcessor), which is required for BM25 matching.
-        
+        """Tokenize text into BM25 terms via the shared tokenizer.
+
+        Delegates to ``src.core.text.tokenizer.tokenize`` so the index-side
+        terms are identical to the query-side (QueryProcessor) terms — the
+        hard requirement for BM25 recall. English terms are Porter-stemmed
+        and stopwords removed; Chinese is jieba-segmented.
+
         Args:
             text: Input text to tokenize
-        
+
         Returns:
-            List of valid terms
+            List of final terms (stemmed / stopword-filtered / length-filtered).
         """
-        tokens: List[str] = []
-
-        # Use jieba to segment the text (handles both Chinese and English)
-        raw_tokens = jieba.lcut(text)
-
-        # Clean tokens: keep only alphanumeric and Chinese characters
-        for token in raw_tokens:
-            token = token.strip()
-            if not token:
-                continue
-            # Skip pure punctuation / whitespace
-            if re.fullmatch(r'[\s\W]+', token, re.UNICODE):
-                continue
-            tokens.append(token)
-        
-        # Apply lowercase if configured
-        if self.lowercase:
-            tokens = [t.lower() for t in tokens]
-        
-        # Filter by minimum length
-        terms = [t for t in tokens if len(t) >= self.min_term_length]
-        
-        return terms
+        return tokenize(
+            text,
+            lowercase=self.lowercase,
+            min_term_length=self.min_term_length,
+            stem_english=True,
+            stopwords=frozenset(ENGLISH_STOPWORDS),
+            dedupe=False,  # index side: keep raw counts for BM25 TF signal
+        )
     
     def get_corpus_stats(
         self,

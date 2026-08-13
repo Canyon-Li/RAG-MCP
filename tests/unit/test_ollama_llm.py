@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from src.libs.llm import LLMFactory, Message, OllamaLLM, OllamaLLMError
@@ -183,6 +184,30 @@ class TestOllamaInit:
         llm = OllamaLLM(settings)
         assert llm.timeout == 120.0  # Longer default for local inference
 
+    def test_init_base_url_from_settings(self):
+        """Should read base_url from settings.llm.base_url (was dead config before fix)."""
+        settings = MockSettings(
+            llm=MockLLMSettings(provider="ollama", model="llama3")
+        )
+        settings.llm.base_url = "http://192.168.1.50:11434"
+        llm = OllamaLLM(settings)
+        assert llm.base_url == "http://192.168.1.50:11434"
+
+    def test_init_base_url_strips_v1_suffix(self):
+        """settings base_url may carry /v1 (shared with vision_llm's OpenAI-compat
+        endpoint); this provider uses native /api/chat so /v1 must be stripped."""
+        settings = MockSettings()
+        settings.llm.base_url = "http://localhost:11434/v1"
+        llm = OllamaLLM(settings)
+        assert llm.base_url == "http://localhost:11434"
+
+    def test_init_explicit_base_url_overrides_settings(self):
+        """Explicit base_url param wins over settings.llm.base_url."""
+        settings = MockSettings()
+        settings.llm.base_url = "http://from-settings:11434"
+        llm = OllamaLLM(settings, base_url="http://explicit:11434")
+        assert llm.base_url == "http://explicit:11434"
+
 
 # -----------------------------------------------------------------------------
 # Chat Tests with Mocked HTTP
@@ -238,7 +263,21 @@ class TestOllamaChat:
             
             assert response.raw_response is not None
             assert "model" in response.raw_response
-    
+
+    def test_chat_uses_trust_env_false(self, llm):
+        """httpx.Client must be constructed with trust_env=False so the system
+        proxy does not intercept localhost traffic (D-014). Without it, a proxy
+        that captures localhost returns 502 instead of reaching Ollama."""
+        mock_response = make_ollama_response()
+
+        with patch("httpx.Client", wraps=httpx.Client) as mock_client:
+            mock_client.return_value.__enter__.return_value.post.return_value = mock_response
+
+            llm.chat([Message(role="user", content="Hello")])
+
+            mock_client.assert_called_once()
+            assert mock_client.call_args.kwargs.get("trust_env") is False
+
     def test_chat_with_system_message(self, llm):
         """Should handle system messages correctly."""
         mock_response = make_ollama_response(content="I understand the context.")

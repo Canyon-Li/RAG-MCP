@@ -86,14 +86,18 @@ def test_encode_multiple_chunks():
 
 
 def test_encode_with_repeated_terms():
-    """Test that term frequencies count correctly."""
+    """Test that term frequencies count correctly.
+
+    Index side uses dedupe=False so repeated terms produce accurate TF.
+    "hello world hello hello" → hello:3, world:1.
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="hello world hello hello", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
+
     assert results[0]["term_frequencies"]["hello"] == 3
     assert results[0]["term_frequencies"]["world"] == 1
     assert results[0]["doc_length"] == 4
@@ -105,92 +109,112 @@ def test_encode_with_repeated_terms():
 # ============================================================================
 
 def test_tokenize_lowercases_by_default():
-    """Test that terms are lowercased by default."""
+    """Test that terms are lowercased by default.
+
+    Index side uses dedupe=False, so "Hello World HELLO" → hello:2, world:1.
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="Hello World HELLO", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
+
     assert "hello" in results[0]["term_frequencies"]
     assert "world" in results[0]["term_frequencies"]
     assert results[0]["term_frequencies"]["hello"] == 2
 
 
 def test_tokenize_preserves_case_when_configured():
-    """Test that case is preserved when lowercase=False."""
+    """Test case behavior when lowercase=False.
+
+    NOTE: The shared tokenizer applies Porter stemming to English words,
+    and the stemmer lowercases internally, so English terms are always
+    lowercased in the output even when lowercase=False.
+    """
     encoder = SparseEncoder(lowercase=False)
     chunks = [
         Chunk(id="1", text="Hello World", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
-    assert "Hello" in results[0]["term_frequencies"]
-    assert "World" in results[0]["term_frequencies"]
-    assert "hello" not in results[0]["term_frequencies"]
+
+    # Stemmer lowercases: Hello→hello, World→world
+    assert "hello" in results[0]["term_frequencies"]
+    assert "world" in results[0]["term_frequencies"]
 
 
 def test_tokenize_filters_by_min_term_length():
-    """Test that short terms are filtered out."""
+    """Test that short terms are filtered out.
+
+    NOTE: English words are Porter-stemmed, so "learning"→"learn".
+    """
     encoder = SparseEncoder(min_term_length=3)
     chunks = [
         Chunk(id="1", text="I am learning Python AI", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
+
     # Should filter out "I", "am", and "AI" (length < 3)
-    assert "learning" in results[0]["term_frequencies"]
+    assert "learn" in results[0]["term_frequencies"]
     assert "python" in results[0]["term_frequencies"]
-    assert results[0]["unique_terms"] == 2  # learning, python
+    assert results[0]["unique_terms"] == 2  # learn, python
 
 
 def test_tokenize_handles_punctuation():
-    """Test that punctuation is handled correctly."""
+    """Test that punctuation is handled correctly.
+
+    NOTE: "how" is an English stopword and is now filtered out.
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="Hello, world! How are you?", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
-    # Punctuation should be removed
+
+    # Punctuation should be removed; "how" is a stopword
     assert "hello" in results[0]["term_frequencies"]
     assert "world" in results[0]["term_frequencies"]
-    assert "how" in results[0]["term_frequencies"]
     assert "," not in results[0]["term_frequencies"]
     assert "!" not in results[0]["term_frequencies"]
 
 
 def test_tokenize_handles_hyphens_and_underscores():
-    """Test that hyphens and underscores are preserved."""
+    """Test hyphen/underscore handling.
+
+    NOTE: The shared tokenizer splits on non-word chars, so hyphenated and
+    underscored terms are split into sub-tokens and each is stemmed.
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="machine-learning deep_learning", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
-    assert "machine-learning" in results[0]["term_frequencies"]
-    assert "deep_learning" in results[0]["term_frequencies"]
+
+    # Split + stem: machine→machin, learning→learn, deep→deep
+    assert "machin" in results[0]["term_frequencies"]
+    assert "learn" in results[0]["term_frequencies"]
+    assert "deep" in results[0]["term_frequencies"]
 
 
 def test_tokenize_handles_numbers():
-    """Test that numbers are tokenized."""
+    """Test that numbers are tokenized.
+
+    NOTE: Hyphens are split, so "gpt-4" → "gpt" + "4" (4 filtered by min_term_length=2).
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="Python 3.11 and GPT-4", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
-    # Numbers should be preserved as alphanumeric tokens
+
     assert "python" in results[0]["term_frequencies"]
-    # "3.11" may be split into "3" and "11" depending on tokenizer
-    # "gpt-4" should be preserved as hyphenated term
-    assert "gpt-4" in results[0]["term_frequencies"]
+    assert "11" in results[0]["term_frequencies"]
+    assert "gpt" in results[0]["term_frequencies"]
 
 
 # ============================================================================
@@ -228,16 +252,19 @@ def test_encode_rejects_chunk_with_whitespace_only_text():
 
 
 def test_encode_handles_special_characters():
-    """Test encoding text with special characters."""
+    """Test encoding text with special characters.
+
+    NOTE: English words are stemmed, so "programming"→"program".
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="C++ and C# programming @2024", metadata={"source_path": "test.txt"})
     ]
-    
+
     results = encoder.encode(chunks)
-    
-    # Should extract alphanumeric terms
-    assert "programming" in results[0]["term_frequencies"]
+
+    # Should extract alphanumeric terms (stemmed)
+    assert "program" in results[0]["term_frequencies"]
     assert "2024" in results[0]["term_frequencies"]
 
 
@@ -310,40 +337,48 @@ def test_get_corpus_stats_single_document():
 
 
 def test_get_corpus_stats_multiple_documents():
-    """Test corpus stats for multiple documents."""
+    """Test corpus stats for multiple documents.
+
+    NOTE: English terms are Porter-stemmed: machine→machin, learning→learn,
+    networks→network, algorithms→algorithm.
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="machine learning", metadata={"source_path": "test.txt"}),
         Chunk(id="2", text="deep learning networks", metadata={"source_path": "test.txt"}),
         Chunk(id="3", text="machine learning algorithms", metadata={"source_path": "test.txt"}),
     ]
-    
+
     encoded = encoder.encode(chunks)
     stats = encoder.get_corpus_stats(encoded)
-    
+
     assert stats["num_docs"] == 3
     assert stats["avg_doc_length"] == (2 + 3 + 3) / 3
-    # "learning" appears in all 3 docs
-    assert stats["document_frequency"]["learning"] == 3
-    # "machine" appears in 2 docs
-    assert stats["document_frequency"]["machine"] == 2
+    # "learn" (stemmed from "learning") appears in all 3 docs
+    assert stats["document_frequency"]["learn"] == 3
+    # "machin" (stemmed from "machine") appears in 2 docs
+    assert stats["document_frequency"]["machin"] == 2
     # "deep" appears in 1 doc
     assert stats["document_frequency"]["deep"] == 1
 
 
 def test_get_corpus_stats_calculates_average_doc_length():
-    """Test that average document length is calculated correctly."""
+    """Test that average document length is calculated correctly.
+
+    NOTE: Stopwords ("this", "is", "a") are now removed by the shared tokenizer,
+    so doc 2 has 2 terms ("longer", "document") instead of 4.
+    """
     encoder = SparseEncoder()
     chunks = [
         Chunk(id="1", text="short", metadata={"source_path": "test.txt"}),
         Chunk(id="2", text="this is a longer document", metadata={"source_path": "test.txt"}),
     ]
-    
+
     encoded = encoder.encode(chunks)
     stats = encoder.get_corpus_stats(encoded)
-    
-    # First doc: 1 term ("short"), Second doc: 4 terms ("this", "is", "longer", "document" - "a" filtered), avg = 2.5
-    assert stats["avg_doc_length"] == 2.5
+
+    # First doc: 1 term ("short"), Second doc: 2 terms ("longer", "document" — stopwords removed), avg = 1.5
+    assert stats["avg_doc_length"] == 1.5
 
 
 def test_get_corpus_stats_handles_empty_list():
@@ -402,4 +437,29 @@ def test_realistic_encoding_scenario():
     assert corpus_stats["num_docs"] == 3
     assert corpus_stats["avg_doc_length"] > 0
     assert len(corpus_stats["document_frequency"]) > 0
+
+
+# ============================================================================
+# English Stemming & Stopword Tests (Task 3 — shared tokenizer)
+# ============================================================================
+
+def test_encode_english_stemming_converges():
+    """同源英文词经 encode 后应落到同一 term(场景核心:optimization 召回 optimal)。"""
+    encoder = SparseEncoder()
+    chunk_a = Chunk(id="a", text="optimization", metadata={"source_path": "test.txt"})
+    chunk_b = Chunk(id="b", text="optimize", metadata={"source_path": "test.txt"})
+    stats_a = encoder.encode([chunk_a])[0]
+    stats_b = encoder.encode([chunk_b])[0]
+    # 两个 chunk 的 term_frequencies 键集应有交集(同一词干)
+    common = set(stats_a["term_frequencies"]) & set(stats_b["term_frequencies"])
+    assert common, f"expected shared stem term, got {stats_a} vs {stats_b}"
+
+
+def test_encode_drops_english_stopwords():
+    """索引侧应剔除英文停用词,避免倒排表膨胀。"""
+    encoder = SparseEncoder()
+    chunk = Chunk(id="x", text="the model is good", metadata={"source_path": "test.txt"})
+    stats = encoder.encode([chunk])[0]
+    terms = set(stats["term_frequencies"])
+    assert "the" not in terms and "is" not in terms
 

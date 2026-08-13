@@ -17,8 +17,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Pattern, Set
 
-import jieba
-
+from src.core.text.tokenizer import tokenize as shared_tokenize
 from src.core.types import ProcessedQuery
 
 
@@ -103,7 +102,7 @@ class QueryProcessor:
         >>> processor = QueryProcessor()
         >>> result = processor.process("如何配置 Azure OpenAI？")
         >>> print(result.keywords)
-        ['配置', 'Azure', 'OpenAI']
+        ['配置', 'azur', 'openai']
     """
     
     def __init__(self, config: Optional[QueryProcessorConfig] = None):
@@ -210,33 +209,32 @@ class QueryProcessor:
         return filters, query_without_filters
     
     def _tokenize(self, text: str) -> List[str]:
-        """Tokenize text into words/terms.
-        
-        Uses jieba for Chinese text segmentation, consistent with the
-        index-side tokenizer (SparseEncoder) so BM25 matching works.
-        English text is handled natively by jieba (preserved as-is).
-        
+        """Tokenize query text via the shared tokenizer.
+
+        Delegates to ``src.core.text.tokenizer.tokenize`` — the SAME function
+        the index-side ``SparseEncoder`` uses — so query terms land on the
+        exact stems stored in the BM25 inverted index. English is Porter-
+        stemmed; stopwords are passed to the tokenizer, which filters them
+        pre-stem AND against their Porter stems post-stem (catches
+        "because"→"becaus" and "use"→"us" alike). ``_filter_keywords``
+        still applies max_keywords / case handling downstream.
+
+        ``min_term_length`` matches the index side (2): a query-side floor of 1
+        produced single-char terms the index never stored (zero-recall noise).
+
         Args:
-            text: Text to tokenize
-            
+            text: Query text (filters already stripped by caller)
+
         Returns:
-            List of tokens
+            List of tokenized terms (stemmed for English, segmented for Chinese).
         """
-        tokens: List[str] = []
-
-        # Use jieba to segment (handles Chinese + keeps English intact)
-        raw_tokens = jieba.lcut(text)
-
-        for token in raw_tokens:
-            token = token.strip()
-            if not token:
-                continue
-            # Skip pure punctuation / whitespace
-            if re.fullmatch(r'[\s\W]+', token, re.UNICODE):
-                continue
-            tokens.append(token)
-        
-        return tokens
+        return shared_tokenize(
+            text,
+            lowercase=True,
+            min_term_length=2,  # match index side (V3 fix): avoid zero-recall short terms
+            stem_english=True,
+            stopwords=frozenset(self.config.stopwords),
+        )
     
     def _filter_keywords(self, tokens: List[str]) -> List[str]:
         """Filter tokens to get meaningful keywords.
