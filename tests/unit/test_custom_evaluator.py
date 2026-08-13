@@ -246,3 +246,54 @@ class TestCustomEvaluatorSourceMetrics:
         """Constructor without source_top_k defaults to 5."""
         evaluator = CustomEvaluator(metrics=["source_recall_at_k"])
         assert evaluator.source_top_k == 5
+
+    def test_source_extract_from_retrieval_result_object(self) -> None:
+        """Real EvalRunner path: chunks are RetrievalResult objects with
+        .metadata['source_path'] (no .source attr). Must still match."""
+        from types import SimpleNamespace
+
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k"], source_top_k=5,
+        )
+        # Simulate a RetrievalResult: has .metadata dict, no .source attr
+        chunk = SimpleNamespace(metadata={"source_path": "paperA.pdf", "chunk_id": "c1"})
+        gt = {"sources": ["paperA.pdf"]}
+
+        metrics = evaluator.evaluate("q", [chunk], ground_truth=gt)
+
+        assert metrics["source_recall_at_k"] == 1.0
+
+    def test_source_basename_normalization(self) -> None:
+        """Absolute path in chunk source_path must match bare filename in GT.
+
+        Mirrors the real ingest outcome: source_path is an absolute Windows
+        path (D:\\...\\paper.pdf) but golden-set expected_sources is a bare
+        filename. Both sides normalise to basename so the match is path-agnostic.
+        """
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k", "source_precision_at_k"],
+            source_top_k=5,
+        )
+        retrieved = [
+            {"id": "c1", "source_path": "D:\\docs\\eval_docs\\paperA.pdf"},
+            {"id": "c2", "source_path": "D:\\docs\\eval_docs\\paperB.pdf"},
+        ]
+        # GT written as bare filenames — the natural golden-set form
+        gt = {"sources": ["paperA.pdf"]}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_recall_at_k"] == 1.0  # paperA found in top-5
+        assert metrics["source_precision_at_k"] == 0.5  # 1 of 2 matches
+
+    def test_source_basename_normalization_posix_path(self) -> None:
+        """Posix absolute path in retrieved, bare filename in GT → match."""
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k"], source_top_k=5,
+        )
+        retrieved = [{"id": "c1", "source_path": "/home/user/papers/paperX.pdf"}]
+        gt = {"sources": ["paperX.pdf"]}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_recall_at_k"] == 1.0

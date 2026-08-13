@@ -6,6 +6,7 @@ It is designed for fast regression checks and sanity validation.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -173,39 +174,65 @@ class CustomEvaluator(BaseEvaluator):
         return 0.0
 
     def _extract_sources(self, chunks: Iterable[Any]) -> List[str]:
-        """Extract source file identifiers from retrieved chunks.
+        """Extract normalised source file basenames from retrieved chunks.
 
-        Reads the ``source`` (or ``source_path``) field from each chunk dict.
+        Handles the three chunk shapes the pipeline produces:
+        - ``dict`` with ``source`` / ``source_path`` (trace snapshots, tests)
+        - ``RetrievalResult`` object with ``.metadata["source_path"]``
+          (the real EvalRunner path — no ``.source`` attr exists)
+        - ``RetrievalResult`` with a ``.source`` attr (defensive fallback)
+
+        Every value is reduced to its basename via :meth:`_normalize_source` so
+        golden-set entries written as bare filenames ("paper.pdf") match chunks
+        whose stored ``source_path`` is an absolute path.
         Missing fields yield an empty string so the slot count matches the
         retrieval order.
         """
         sources: List[str] = []
         for item in chunks:
+            raw = ""
             if isinstance(item, dict):
-                value = ""
                 for field in self._SOURCE_FIELDS:
-                    if field in item and item[field]:
-                        value = str(item[field])
+                    if item.get(field):
+                        raw = str(item[field])
                         break
-                sources.append(value)
+            elif hasattr(item, "metadata") and isinstance(item.metadata, dict):
+                for field in self._SOURCE_FIELDS:
+                    if item.metadata.get(field):
+                        raw = str(item.metadata[field])
+                        break
             elif hasattr(item, "source"):
-                sources.append(str(getattr(item, "source")))
-            else:
-                sources.append("")
+                raw = str(getattr(item, "source"))
+            sources.append(self._normalize_source(raw))
         return sources
+
+    @staticmethod
+    def _normalize_source(value: str) -> str:
+        """Reduce a source path to its basename for stable matching.
+
+        Chunk ``source_path`` may be absolute (Windows or POSIX); golden-set
+        ``expected_sources`` are bare filenames. Normalising both sides to the
+        basename makes the match robust to ingest directory / platform without
+        forcing the golden set to encode absolute paths.
+        """
+        if not value:
+            return ""
+        return os.path.basename(value.replace("\\", "/"))
 
     def _extract_ground_truth_sources(self, ground_truth: Optional[Any]) -> List[str]:
         """Extract expected source identifiers from ground_truth.
 
         Accepts a dict shaped as ``{"sources": [<file>, ...]}`` or a bare list.
+        Each entry is normalised to a basename so the comparison with retrieved
+        sources (also basename-normalised) is path-agnostic.
         """
         if ground_truth is None:
             return []
         if isinstance(ground_truth, dict):
             sources = ground_truth.get("sources", [])
-            return [str(s) for s in sources] if sources else []
+            return [self._normalize_source(str(s)) for s in sources] if sources else []
         if isinstance(ground_truth, list):
-            return [str(s) for s in ground_truth]
+            return [self._normalize_source(str(s)) for s in ground_truth]
         return []
 
     @staticmethod
