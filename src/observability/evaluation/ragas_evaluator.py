@@ -14,6 +14,7 @@ Design Principles:
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -60,6 +61,29 @@ class RagasEvaluator(BaseEvaluator):
         )
         # metrics == {"faithfulness": 0.95, "answer_relevancy": 0.88, ...}
     """
+
+    # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
+    # Configured via env vars so the judge is stable across provider swaps.
+    _JUDGE_MODEL = "granite4.1:8b"
+    _JUDGE_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+
+    @staticmethod
+    def _resolve_judge_provider() -> str:
+        """Which provider family to use for the judge LLM.
+
+        Reads RAGAS_JUDGE_PROVIDER (default 'ollama'). Set to 'azure' or
+        'openai' to use a cloud judge instead.
+        """
+        return os.environ.get("RAGAS_JUDGE_PROVIDER", "ollama").lower()
+
+    def _resolve_ollama_base_url(self) -> str:
+        """Ollama endpoint: OLLAMA_BASE_URL env > default, with /v1 suffix."""
+        env_url = os.environ.get("OLLAMA_BASE_URL", "").rstrip("/")
+        if not env_url:
+            return self._JUDGE_DEFAULT_BASE_URL
+        if env_url.endswith("/v1"):
+            return env_url
+        return f"{env_url}/v1"
 
     def __init__(
         self,
@@ -207,6 +231,20 @@ class RagasEvaluator(BaseEvaluator):
 
         if self.settings is None:
             raise ValueError("Settings required to create LLM for Ragas evaluation")
+
+        judge_provider = self._resolve_judge_provider()
+        if judge_provider == "ollama":
+            base_url = self._resolve_ollama_base_url()
+            client = AsyncOpenAI(base_url=base_url, api_key="ollama")
+            llm = llm_factory(self._JUDGE_MODEL, client=client, max_tokens=8192)
+            # Ollama embeddings for AnswerRelevancy (if used) — reuse same endpoint.
+            # nomic-embed-text is the project's embedding model.
+            embeddings = OpenAIEmbeddings(
+                model="nomic-embed-text", client=client,
+            )
+            return llm, embeddings
+
+        # Fallback: original cloud-judge logic (azure/openai) below
 
         # ── LLM ──
         llm_cfg = self.settings.llm

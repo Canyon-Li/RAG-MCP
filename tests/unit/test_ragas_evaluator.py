@@ -238,3 +238,57 @@ class TestRagasEvaluatorFactory:
         providers = EvaluatorFactory.list_providers()
         assert "custom" in providers
         # ragas may be in _PROVIDERS after first create or in _LAZY_PROVIDERS
+
+
+class TestRagasOllamaJudge:
+    """Tests that RagasEvaluator builds an Ollama-backed judge wrapper."""
+
+    def test_build_wrappers_ollama_branch(self, monkeypatch) -> None:
+        """_build_wrappers with ollama provider creates AsyncOpenAI with ollama base_url."""
+        import sys as _sys
+
+        # Force ollama branch
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "ollama")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+        # Mock at the source modules — _build_wrappers imports these names
+        # function-locally (from openai / ragas.llms), so module-attribute
+        # patches on the evaluator module won't resolve. Patch the origin.
+        # ragas.llms triggers a heavy import chain; stub ragas submodules so
+        # patch() can resolve the target without importing the real ragas.
+        mock_llms_mod = MagicMock()
+        mock_llms_mod.llm_factory = MagicMock(name="ragas_llm_factory_fn")
+        mock_emb_mod = MagicMock()
+        mock_emb_mod.OpenAIEmbeddings = MagicMock(name="OpenAIEmbeddings_cls")
+
+        ragas_stubs = {
+            "ragas": MagicMock(),
+            "ragas.llms": mock_llms_mod,
+            "ragas.llms.base": MagicMock(),
+            "ragas.embeddings": mock_emb_mod,
+            "ragas.embeddings.base": MagicMock(),
+        }
+
+        with patch.dict(_sys.modules, ragas_stubs, clear=False), \
+             patch("openai.AsyncOpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock(name="openai_client")
+
+            # Build a minimal settings stub — _build_wrappers reads settings.embedding
+            # for the embeddings wrapper, but in ollama branch we reuse the same client
+            from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+            settings = MagicMock()
+            settings.llm.provider = "ollama"
+            settings.embedding.provider = "ollama"
+
+            evaluator = RagasEvaluator.__new__(RagasEvaluator)  # bypass __init__ (ragas import)
+            evaluator.settings = settings
+
+            llm, embeddings = evaluator._build_wrappers()
+
+            # AsyncOpenAI called with the ollama base_url (/v1 appended)
+            call_kwargs = mock_openai.call_args.kwargs
+            assert "localhost:11434" in call_kwargs["base_url"]
+            assert call_kwargs["api_key"] == "ollama"
+            # llm_factory called with granite model
+            factory_args = mock_llms_mod.llm_factory.call_args.args
+            assert "granite4.1:8b" in factory_args
