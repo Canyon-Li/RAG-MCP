@@ -161,3 +161,88 @@ class TestCustomEvaluatorBoundary:
             evaluator.evaluate("", [{"id": "x"}])
         with pytest.raises(ValueError):
             evaluator.evaluate("q", [])
+
+
+class TestCustomEvaluatorSourceMetrics:
+    """Tests for source-level retrieval metrics (Source Recall/Precision@k)."""
+
+    def test_source_recall_at_5_hit(self) -> None:
+        """top-5 contains the expected source → recall = 1.0."""
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k", "source_precision_at_k"],
+            source_top_k=5,
+        )
+        retrieved = [
+            {"id": "c1", "source": "paperA.pdf"},
+            {"id": "c2", "source": "paperB.pdf"},
+        ]
+        gt = {"sources": ["paperA.pdf"]}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_recall_at_k"] == 1.0
+
+    def test_source_recall_at_5_miss(self) -> None:
+        """top-5 does not contain expected source → recall = 0.0."""
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k"], source_top_k=5,
+        )
+        retrieved = [
+            {"id": "c1", "source": "paperB.pdf"},
+            {"id": "c2", "source": "paperC.pdf"},
+        ]
+        gt = {"sources": ["paperA.pdf"]}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_recall_at_k"] == 0.0
+
+    def test_source_precision_at_5(self) -> None:
+        """2 retrieved, 1 matches → precision = 1/2 = 0.5."""
+        evaluator = CustomEvaluator(
+            metrics=["source_precision_at_k"], source_top_k=5,
+        )
+        retrieved = [
+            {"id": "c1", "source": "paperA.pdf"},
+            {"id": "c2", "source": "paperB.pdf"},
+        ]
+        gt = {"sources": ["paperA.pdf"]}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_precision_at_k"] == 0.5
+
+    def test_source_top_k_truncation(self) -> None:
+        """Only top-k chunks considered for precision; k=2, both match."""
+        evaluator = CustomEvaluator(
+            metrics=["source_precision_at_k"], source_top_k=2,
+        )
+        retrieved = [
+            {"id": "c1", "source": "paperA.pdf"},
+            {"id": "c2", "source": "paperA.pdf"},
+            {"id": "c3", "source": "paperB.pdf"},  # beyond k, ignored
+        ]
+        gt = {"sources": ["paperA.pdf"]}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_precision_at_k"] == 1.0
+
+    def test_source_metrics_empty_gt_returns_zero(self) -> None:
+        """Empty expected_sources → recall/precision = 0.0 (not error)."""
+        evaluator = CustomEvaluator(
+            metrics=["source_recall_at_k", "source_precision_at_k"],
+            source_top_k=5,
+        )
+        retrieved = [{"id": "c1", "source": "paperA.pdf"}]
+        gt = {"sources": []}
+
+        metrics = evaluator.evaluate("q", retrieved, ground_truth=gt)
+
+        assert metrics["source_recall_at_k"] == 0.0
+        assert metrics["source_precision_at_k"] == 0.0
+
+    def test_source_top_k_default_is_5(self) -> None:
+        """Constructor without source_top_k defaults to 5."""
+        evaluator = CustomEvaluator(metrics=["source_recall_at_k"])
+        assert evaluator.source_top_k == 5

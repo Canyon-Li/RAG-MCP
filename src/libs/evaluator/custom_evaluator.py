@@ -18,17 +18,20 @@ class CustomEvaluator(BaseEvaluator):
     Supported id fields: id, chunk_id, document_id, doc_id.
     """
 
-    SUPPORTED_METRICS = {"hit_rate", "mrr"}
+    SUPPORTED_METRICS = {"hit_rate", "mrr", "source_recall_at_k", "source_precision_at_k"}
     _ID_FIELDS = ("id", "chunk_id", "document_id", "doc_id")
+    _SOURCE_FIELDS = ("source", "source_path")
 
     def __init__(
         self,
         settings: Any = None,
         metrics: Optional[Sequence[str]] = None,
+        source_top_k: int = 5,
         **kwargs: Any,
     ) -> None:
         self.settings = settings
         self.kwargs = kwargs
+        self.source_top_k = source_top_k
 
         if metrics is None:
             metrics = self._metrics_from_settings(settings)
@@ -71,15 +74,30 @@ class CustomEvaluator(BaseEvaluator):
         self.validate_query(query)
         self.validate_retrieved_chunks(retrieved_chunks)
 
-        retrieved_ids = self._extract_ids(retrieved_chunks, label="retrieved_chunks")
-        ground_truth_ids = self._extract_ground_truth_ids(ground_truth)
-
         results: Dict[str, float] = {}
 
-        if "hit_rate" in self.metrics:
-            results["hit_rate"] = self._compute_hit_rate(retrieved_ids, ground_truth_ids)
-        if "mrr" in self.metrics:
-            results["mrr"] = self._compute_mrr(retrieved_ids, ground_truth_ids)
+        if "hit_rate" in self.metrics or "mrr" in self.metrics:
+            retrieved_ids = self._extract_ids(retrieved_chunks, label="retrieved_chunks")
+            ground_truth_ids = self._extract_ground_truth_ids(ground_truth)
+
+            if "hit_rate" in self.metrics:
+                results["hit_rate"] = self._compute_hit_rate(retrieved_ids, ground_truth_ids)
+            if "mrr" in self.metrics:
+                results["mrr"] = self._compute_mrr(retrieved_ids, ground_truth_ids)
+
+        if "source_recall_at_k" in self.metrics or "source_precision_at_k" in self.metrics:
+            retrieved_sources = self._extract_sources(retrieved_chunks)
+            gt_sources = self._extract_ground_truth_sources(ground_truth)
+            top_k_sources = retrieved_sources[: self.source_top_k]
+
+            if "source_recall_at_k" in self.metrics:
+                results["source_recall_at_k"] = self._compute_source_recall(
+                    top_k_sources, gt_sources
+                )
+            if "source_precision_at_k" in self.metrics:
+                results["source_precision_at_k"] = self._compute_source_precision(
+                    top_k_sources, gt_sources
+                )
 
         return results
 
@@ -153,3 +171,65 @@ class CustomEvaluator(BaseEvaluator):
             if item in ground_truth_ids:
                 return 1.0 / rank
         return 0.0
+
+    def _extract_sources(self, chunks: Iterable[Any]) -> List[str]:
+        """Extract source file identifiers from retrieved chunks.
+
+        Reads the ``source`` (or ``source_path``) field from each chunk dict.
+        Missing fields yield an empty string so the slot count matches the
+        retrieval order.
+        """
+        sources: List[str] = []
+        for item in chunks:
+            if isinstance(item, dict):
+                value = ""
+                for field in self._SOURCE_FIELDS:
+                    if field in item and item[field]:
+                        value = str(item[field])
+                        break
+                sources.append(value)
+            elif hasattr(item, "source"):
+                sources.append(str(getattr(item, "source")))
+            else:
+                sources.append("")
+        return sources
+
+    def _extract_ground_truth_sources(self, ground_truth: Optional[Any]) -> List[str]:
+        """Extract expected source identifiers from ground_truth.
+
+        Accepts a dict shaped as ``{"sources": [<file>, ...]}`` or a bare list.
+        """
+        if ground_truth is None:
+            return []
+        if isinstance(ground_truth, dict):
+            sources = ground_truth.get("sources", [])
+            return [str(s) for s in sources] if sources else []
+        if isinstance(ground_truth, list):
+            return [str(s) for s in ground_truth]
+        return []
+
+    @staticmethod
+    def _compute_source_recall(
+        retrieved_sources: Sequence[str],
+        gt_sources: Sequence[str],
+    ) -> float:
+        """Source Recall@k: 1.0 if any expected source appears in top-k, else 0.0.
+
+        Binary recall — 'did we find the right paper at all'.
+        """
+        if not gt_sources:
+            return 0.0
+        gt_set = set(gt_sources)
+        return 1.0 if any(s in gt_set for s in retrieved_sources if s) else 0.0
+
+    @staticmethod
+    def _compute_source_precision(
+        retrieved_sources: Sequence[str],
+        gt_sources: Sequence[str],
+    ) -> float:
+        """Source Precision@k: fraction of top-k chunks whose source is expected."""
+        if not retrieved_sources:
+            return 0.0
+        gt_set = set(gt_sources)
+        hits = sum(1 for s in retrieved_sources if s and s in gt_set)
+        return hits / len(retrieved_sources)
