@@ -35,14 +35,14 @@ class SparseEncoder:
         }
     
     Design:
-    - Tokenization: Simple whitespace + lowercasing (can be enhanced later)
-    - Stop Words: None by default (can add in future iterations)
+    - Tokenization: Shared tokenizer (jieba for Chinese, Porter stem + ENGLISH_STOPWORDS for English)
+    - Stop Words: ENGLISH_STOPWORDS via shared tokenizer (pre-stem filtering)
     - Deterministic: Same chunk text always produces same statistics
-    
+
     Example:
         >>> from src.core.types import Chunk
         >>> encoder = SparseEncoder()
-        >>> 
+        >>>
         >>> chunks = [Chunk(id="1", text="Hello world hello", metadata={})]
         >>> stats = encoder.encode(chunks)
         >>> stats[0]["term_frequencies"]["hello"]  # 2
@@ -100,7 +100,7 @@ class SparseEncoder:
             ... ]
             >>> stats = encoder.encode(chunks)
             >>> len(stats) == len(chunks)  # True
-            >>> stats[0]["term_frequencies"]["machine"]  # 1
+            >>> "machin" in stats[0]["term_frequencies"]  # stemmed from "machine"
             >>> stats[1]["doc_length"]  # 3
         """
         if not chunks:
@@ -151,6 +151,7 @@ class SparseEncoder:
             min_term_length=self.min_term_length,
             stem_english=True,
             stopwords=frozenset(ENGLISH_STOPWORDS),
+            dedupe=False,  # index side: keep raw counts for BM25 TF signal
         )
     
     def get_corpus_stats(

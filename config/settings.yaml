@@ -12,7 +12,7 @@ llm:
   azure_endpoint: ""
   api_version: ""
   api_key: ""  # 本地 ollama 无需 key
-  base_url: "http://localhost:11434/v1"  # httpx 需 trust_env=False 绕系统代理（已就绪）
+  base_url: "http://localhost:11434/v1"  # /v1 供 vision/embedding 的 OpenAI 兼容端点;text OllamaLLM 自动剥 /v1 用原生 /api/chat。三个 ollama 模块均 trust_env=False 绕系统代理(D-014)
   temperature: 0.0
   max_tokens: 4096
 

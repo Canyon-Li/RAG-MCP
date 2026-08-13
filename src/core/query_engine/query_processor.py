@@ -102,7 +102,7 @@ class QueryProcessor:
         >>> processor = QueryProcessor()
         >>> result = processor.process("如何配置 Azure OpenAI？")
         >>> print(result.keywords)
-        ['配置', 'Azure', 'OpenAI']
+        ['配置', 'azur', 'openai']
     """
     
     def __init__(self, config: Optional[QueryProcessorConfig] = None):
@@ -214,8 +214,13 @@ class QueryProcessor:
         Delegates to ``src.core.text.tokenizer.tokenize`` — the SAME function
         the index-side ``SparseEncoder`` uses — so query terms land on the
         exact stems stored in the BM25 inverted index. English is Porter-
-        stemmed; stopwords are removed in ``_filter_keywords`` downstream
-        (the shared tokenizer also receives them for defense-in-depth).
+        stemmed; stopwords are passed to the tokenizer, which filters them
+        pre-stem AND against their Porter stems post-stem (catches
+        "because"→"becaus" and "use"→"us" alike). ``_filter_keywords``
+        still applies max_keywords / case handling downstream.
+
+        ``min_term_length`` matches the index side (2): a query-side floor of 1
+        produced single-char terms the index never stored (zero-recall noise).
 
         Args:
             text: Query text (filters already stripped by caller)
@@ -226,9 +231,9 @@ class QueryProcessor:
         return shared_tokenize(
             text,
             lowercase=True,
-            min_term_length=1,  # length filter applied in _filter_keywords
+            min_term_length=2,  # match index side (V3 fix): avoid zero-recall short terms
             stem_english=True,
-            stopwords=frozenset(),  # stopword filtering kept in _filter_keywords
+            stopwords=frozenset(self.config.stopwords),
         )
     
     def _filter_keywords(self, tokens: List[str]) -> List[str]:

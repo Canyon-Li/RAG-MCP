@@ -88,8 +88,8 @@ def test_encode_multiple_chunks():
 def test_encode_with_repeated_terms():
     """Test that term frequencies count correctly.
 
-    NOTE: The shared tokenizer deduplicates terms, so repeated occurrences
-    of the same surface form produce a single entry with count 1.
+    Index side uses dedupe=False so repeated terms produce accurate TF.
+    "hello world hello hello" → hello:3, world:1.
     """
     encoder = SparseEncoder()
     chunks = [
@@ -98,9 +98,9 @@ def test_encode_with_repeated_terms():
 
     results = encoder.encode(chunks)
 
-    assert results[0]["term_frequencies"]["hello"] == 1
+    assert results[0]["term_frequencies"]["hello"] == 3
     assert results[0]["term_frequencies"]["world"] == 1
-    assert results[0]["doc_length"] == 2
+    assert results[0]["doc_length"] == 4
     assert results[0]["unique_terms"] == 2
 
 
@@ -111,8 +111,7 @@ def test_encode_with_repeated_terms():
 def test_tokenize_lowercases_by_default():
     """Test that terms are lowercased by default.
 
-    NOTE: The shared tokenizer deduplicates, so HELLO appearing twice
-    still yields count 1.
+    Index side uses dedupe=False, so "Hello World HELLO" → hello:2, world:1.
     """
     encoder = SparseEncoder()
     chunks = [
@@ -123,7 +122,7 @@ def test_tokenize_lowercases_by_default():
 
     assert "hello" in results[0]["term_frequencies"]
     assert "world" in results[0]["term_frequencies"]
-    assert results[0]["term_frequencies"]["hello"] == 1
+    assert results[0]["term_frequencies"]["hello"] == 2
 
 
 def test_tokenize_preserves_case_when_configured():

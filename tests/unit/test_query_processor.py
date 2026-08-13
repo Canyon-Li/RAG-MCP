@@ -509,6 +509,15 @@ class TestKeywordsNonEmpty:
 class TestCrossLayerTokenization:
     """Cross-layer consistency: query tokens must be a subset of index terms."""
 
+    def test_stem_mutated_stopwords_filtered(self):
+        """Stopwords whose Porter stem differs from surface form must still be filtered."""
+        processor = QueryProcessor()
+        result = processor.process("the optimization because these networks")
+        keywords_lower = [k.lower() for k in result.keywords]
+        assert "becaus" not in keywords_lower  # because→becaus would leak without pre-stem filter
+        assert "thes" not in keywords_lower    # these→thes
+        assert "optim" in keywords_lower       # content word kept (stemmed)
+
     def test_query_and_index_tokenization_match(self):
         """同一文本,query 侧 tokenized 后的关键词 ⊆ 索引侧 term。
         这是 BM25 召回的充要条件(spec 纪律级约束)。"""
@@ -540,3 +549,13 @@ class TestCrossLayerTokenization:
         encoder = SparseEncoder()
         idx = set(encoder.encode([Chunk(id="t", text="optimization", metadata={"source_path": "dummy"})])[0]["term_frequencies"])
         assert set(k.lower() for k in result.keywords) & idx, "query stem != index stem"
+
+    def test_no_zero_recall_single_char_chinese(self):
+        """V3: query 侧 min_term_length=2 (对齐 index),不再产生 index 从不存储的
+        单字 term。'猫吃鱼' jieba 分成三个单字,旧 query(min_term_length=1)会把它们
+        当关键词,但 index(min_term_length=2)全丢 → 零召回噪声。"""
+        processor = QueryProcessor()
+        result = processor.process("猫吃鱼")
+        # 单字不应作为关键词(index 侧不会存)
+        for kw in result.keywords:
+            assert len(kw) >= 2, f"single-char keyword leaked (zero-recall): {kw}"
