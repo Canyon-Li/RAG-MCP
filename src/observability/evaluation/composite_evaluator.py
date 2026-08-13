@@ -33,14 +33,15 @@ class CompositeEvaluator(BaseEvaluator):
     Example::
 
         composite = CompositeEvaluator(evaluators=[
-            CustomEvaluator(metrics=["hit_rate", "mrr"]),
-            RagasEvaluator(metrics=["faithfulness"]),
+            CustomEvaluator(metrics=["source_recall_at_k", "source_precision_at_k"]),
+            RagasEvaluator(metrics=["context_relevance", "context_precision"]),
         ])
         metrics = composite.evaluate(
             query="test", retrieved_chunks=[...],
-            generated_answer="...", ground_truth=[...]
+            ground_truth={"sources": ["paper.pdf"], "reference": "..."},
         )
-        # metrics == {"hit_rate": 1.0, "mrr": 0.5, "faithfulness": 0.92}
+        # metrics == {"source_recall_at_k": 1.0, "source_precision_at_k": 0.5,
+        #             "context_relevance": 0.95, "context_precision": 0.97}
     """
 
     def __init__(
@@ -172,12 +173,13 @@ class CompositeEvaluator(BaseEvaluator):
               enabled: true
               provider: composite
               backends:
-                - ragas
                 - custom
+                - ragas
               metrics:
-                - faithfulness
-                - hit_rate
-                - mrr
+                - source_recall_at_k
+                - source_precision_at_k
+                - context_relevance
+                - context_precision
 
         Args:
             settings: Application settings.

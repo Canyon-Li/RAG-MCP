@@ -6,7 +6,10 @@ This evaluator wraps the Ragas framework to compute LLM-as-Judge metrics:
 
 Design Principles:
 - Pluggable: Implements BaseEvaluator interface, swappable via factory.
-- Config-Driven: LLM/Embedding backend read from settings.yaml.
+- Judge-decoupled: The judge LLM is NOT the retrieval pipeline's settings.llm —
+  it is configured via env vars (RAGAS_JUDGE_PROVIDER / RAGAS_JUDGE_MODEL /
+  OLLAMA_BASE_URL) and defaults to a local Ollama model, so swapping retrieval
+  backends never affects the judge.
 - Graceful Degradation: Clear ImportError if ragas not installed.
 """
 
@@ -78,8 +81,8 @@ class RagasEvaluator(BaseEvaluator):
 
     # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
     # Configured via env vars so the judge is stable across provider swaps.
-    _JUDGE_MODEL = os.environ.get("RAGAS_JUDGE_MODEL", "llama3")
     _JUDGE_DEFAULT_BASE_URL = "http://localhost:11434/v1"
+    _DEFAULT_JUDGE_MODEL = "llama3"
 
     @staticmethod
     def _resolve_judge_provider() -> str:
@@ -89,6 +92,16 @@ class RagasEvaluator(BaseEvaluator):
         'openai' to use a cloud judge instead.
         """
         return os.environ.get("RAGAS_JUDGE_PROVIDER", "ollama").lower()
+
+    @classmethod
+    def _resolve_judge_model(cls) -> str:
+        """Which model to use for the judge LLM.
+
+        Reads RAGAS_JUDGE_MODEL at call time (default llama3). Read at call
+        time — not class-definition time — so it can be hot-swapped, matching
+        _resolve_judge_provider's pattern.
+        """
+        return os.environ.get("RAGAS_JUDGE_MODEL", cls._DEFAULT_JUDGE_MODEL)
 
     def _resolve_ollama_base_url(self) -> str:
         """Ollama endpoint: OLLAMA_BASE_URL env > default, with /v1 suffix."""
@@ -153,9 +166,11 @@ class RagasEvaluator(BaseEvaluator):
         Args:
             query: The user query string.
             retrieved_chunks: Retrieved chunks (dicts with 'text' key or strings).
-            generated_answer: The generated answer text. Optional; not required
-                for context_relevance. Falls back to query for context_precision.
-            ground_truth: Ignored by Ragas (not needed for LLM-as-Judge).
+            generated_answer: Unused — this system does not generate answers.
+                Retained for BaseEvaluator interface compatibility.
+            ground_truth: Consumed for context_precision — the golden set's
+                reference answer is read from ``ground_truth["reference"]``
+                (forwarded by EvalRunner). context_relevance needs no ground truth.
             trace: Optional TraceContext for observability.
             **kwargs: Additional parameters.
 
@@ -278,7 +293,7 @@ class RagasEvaluator(BaseEvaluator):
             client = AsyncOpenAI(
                 base_url=base_url, api_key="ollama", http_client=http_client,
             )
-            llm = llm_factory(self._JUDGE_MODEL, client=client, max_tokens=8192)
+            llm = llm_factory(self._resolve_judge_model(), client=client, max_tokens=8192)
             # Ollama embeddings — reuse same endpoint.
             # nomic-embed-text is the project's embedding model.
             embeddings = OpenAIEmbeddings(

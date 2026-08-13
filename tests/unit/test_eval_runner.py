@@ -130,7 +130,10 @@ class TestEvalRunner:
         assert len(report.query_results) == 2
         assert report.aggregate_metrics["hit_rate"] == 1.0
         assert report.aggregate_metrics["mrr"] == 0.5
-        assert report.total_elapsed_ms > 0
+        # total_elapsed_ms is a real wall-clock delta; on a fast stub it may
+        # read 0.0. Assert non-negative (monotonic guarantee) rather than > 0
+        # to avoid a flaky timing assertion.
+        assert report.total_elapsed_ms >= 0
 
     def test_run_with_hybrid_search(self, tmp_path: Path) -> None:
         f = tmp_path / "g.json"

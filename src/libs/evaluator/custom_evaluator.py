@@ -1,7 +1,13 @@
-"""Custom evaluator implementation for lightweight metrics.
+"""Custom evaluator for deterministic metrics.
 
-This evaluator computes simple, deterministic metrics such as hit rate and MRR.
-It is designed for fast regression checks and sanity validation.
+Computes two families of fast, LLM-free metrics:
+- chunk-level IR: hit_rate, mrr (against ground_truth chunk ids)
+- source-level provenance: source_recall_at_k, source_precision_at_k
+  (against ground_truth source filenames — measures whether the right
+  *paper* appears in top-k, the core of a provenance RAG system)
+
+Source matching is basename-normalised so golden-set filenames match chunks
+whose stored ``source_path`` is absolute. Designed for fast regression checks.
 """
 
 from __future__ import annotations
@@ -13,10 +19,16 @@ from src.libs.evaluator.base_evaluator import BaseEvaluator
 
 
 class CustomEvaluator(BaseEvaluator):
-    """Custom evaluator for lightweight metrics (hit_rate, mrr).
+    """Custom evaluator for deterministic metrics.
 
-    The evaluator expects retrieved chunks to contain an identifier field.
-    Supported id fields: id, chunk_id, document_id, doc_id.
+    Two metric families:
+    - hit_rate / mrr: chunk-level IR. Expects retrieved chunks to carry an
+      identifier field (id, chunk_id, document_id, doc_id).
+    - source_recall_at_k / source_precision_at_k: source-level provenance.
+      Reads each chunk's source (dict ``source``/``source_path``, or object
+      ``.metadata['source_path']``) and matches against
+      ``ground_truth['sources']`` after basename normalisation. k defaults to 5
+      (constructor param ``source_top_k``).
     """
 
     SUPPORTED_METRICS = {"hit_rate", "mrr", "source_recall_at_k", "source_precision_at_k"}

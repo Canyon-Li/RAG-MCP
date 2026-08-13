@@ -278,10 +278,10 @@ class TestRagasOllamaJudge:
             assert "localhost:11434" in call_kwargs["base_url"]
             assert call_kwargs["api_key"] == "ollama"
             # llm_factory called with the configured judge model (default llama3,
-            # overridable via RAGAS_JUDGE_MODEL env). Don't pin the model name —
-            # assert it's the class's resolved _JUDGE_MODEL value.
+            # overridable via RAGAS_JUDGE_MODEL env, read at call time). Don't pin
+            # the model name — assert it's the resolved value.
             factory_args = mock_llms_mod.llm_factory.call_args.args
-            assert RagasEvaluator._JUDGE_MODEL in factory_args
+            assert RagasEvaluator._resolve_judge_model() in factory_args
 
 
 class TestRagasMetricRouting:
