@@ -30,7 +30,7 @@ Then verify with `<Factory>.list_providers()` or by reading the registration blo
 | Splitter | `BaseSplitter` (`libs/splitter/`) | `SplitterFactory` | recursive |
 | Vector store | `BaseVectorStore` (`libs/vector_store/`) | `VectorStoreFactory` | chroma |
 | Reranker | `BaseReranker` (`libs/reranker/`) | `RerankerFactory` | llm, cross_encoder |
-| Evaluator | `BaseEvaluator` (`libs/evaluator/`) | `EvaluatorFactory` | (scaffolded — see factory) |
+| Evaluator | `BaseEvaluator` (`libs/evaluator/`) | `EvaluatorFactory` | custom, ragas (lazy), composite (lazy) |
 | Parser | `BaseParser` (`libs/parser/`) | `ParserFactory` | pdf, pdf_text, pdf_table, docling, docling_vlm, docx |
 | Transform | `BaseTransform` (`ingestion/transform/`) | none — wired directly in `IngestionPipeline` | chunk_refiner, metadata_enricher, image_captioner |
 
