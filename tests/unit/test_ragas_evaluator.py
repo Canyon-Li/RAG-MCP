@@ -3,9 +3,10 @@
 Tests verify:
 - Initialization with valid/invalid metrics
 - ImportError handling when ragas is not installed
-- Input validation (missing answer, empty query, etc.)
+- Input validation (empty query, empty chunks, etc.)
 - Metric extraction from settings
 - Text extraction from various chunk formats
+- New context_relevance / context_precision routing
 
 Note: Actual Ragas evaluation (LLM calls) is mocked to keep unit tests fast
 and deterministic.
@@ -27,16 +28,15 @@ class TestRagasEvaluatorInit:
 
         evaluator = RagasEvaluator()
         assert set(evaluator._metric_names) == {
-            "answer_relevancy",
             "context_precision",
-            "faithfulness",
+            "context_relevance",
         }
 
     def test_init_custom_metrics(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
-        assert evaluator._metric_names == ["faithfulness"]
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
+        assert evaluator._metric_names == ["context_relevance"]
 
     def test_init_unsupported_metric_raises(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
@@ -48,19 +48,21 @@ class TestRagasEvaluatorInit:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         settings = MagicMock()
-        settings.evaluation.metrics = ["faithfulness", "answer_relevancy", "hit_rate"]
+        settings.evaluation.metrics = [
+            "context_relevance", "context_precision", "hit_rate",
+        ]
 
         evaluator = RagasEvaluator(settings=settings)
         # hit_rate is not a ragas metric, should be filtered out
         assert "hit_rate" not in evaluator._metric_names
-        assert "faithfulness" in evaluator._metric_names
-        assert "answer_relevancy" in evaluator._metric_names
+        assert "context_relevance" in evaluator._metric_names
+        assert "context_precision" in evaluator._metric_names
 
     def test_init_no_settings_defaults_to_all(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         evaluator = RagasEvaluator(settings=None, metrics=None)
-        assert len(evaluator._metric_names) == 3
+        assert len(evaluator._metric_names) == 2
 
 
 class TestRagasImportCheck:
@@ -80,30 +82,16 @@ class TestRagasEvaluatorValidation:
     def test_empty_query_raises(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
         with pytest.raises(ValueError, match="Query cannot be empty"):
             evaluator.evaluate("  ", [{"text": "ctx"}], generated_answer="ans")
 
     def test_empty_chunks_raises(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
         with pytest.raises(ValueError, match="retrieved_chunks cannot be empty"):
             evaluator.evaluate("query", [], generated_answer="ans")
-
-    def test_missing_generated_answer_raises(self) -> None:
-        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
-
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
-        with pytest.raises(ValueError, match="generated_answer"):
-            evaluator.evaluate("query", [{"text": "ctx"}], generated_answer=None)
-
-    def test_empty_generated_answer_raises(self) -> None:
-        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
-
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
-        with pytest.raises(ValueError, match="generated_answer"):
-            evaluator.evaluate("query", [{"text": "ctx"}], generated_answer="   ")
 
 
 class TestRagasEvaluatorTextExtraction:
@@ -112,7 +100,7 @@ class TestRagasEvaluatorTextExtraction:
     def test_extract_from_dicts(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
         result = evaluator._extract_texts([
             {"text": "chunk1"},
             {"content": "chunk2"},
@@ -123,14 +111,14 @@ class TestRagasEvaluatorTextExtraction:
     def test_extract_from_strings(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
         result = evaluator._extract_texts(["chunk1", "chunk2"])
         assert result == ["chunk1", "chunk2"]
 
     def test_extract_from_objects(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
 
         class Chunk:
             def __init__(self, text: str) -> None:
@@ -155,15 +143,15 @@ class TestRagasEvaluatorEvaluate:
     def test_evaluate_returns_metrics_dict(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness", "context_precision"])
+        evaluator = RagasEvaluator(metrics=["context_relevance", "context_precision"])
 
-        expected = {"faithfulness": 0.92, "context_precision": 0.85}
+        expected = {"context_relevance": 0.92, "context_precision": 0.85}
         evaluator._run_ragas = MagicMock(return_value=expected)  # type: ignore[method-assign]
 
         result = evaluator.evaluate(
             query="What is RAG?",
             retrieved_chunks=["RAG is retrieval augmented generation."],
-            generated_answer="RAG stands for Retrieval Augmented Generation.",
+            generated_answer="",
         )
 
         assert result == expected
@@ -171,15 +159,15 @@ class TestRagasEvaluatorEvaluate:
     def test_evaluate_with_mocked_run_ragas(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness", "answer_relevancy"])
+        evaluator = RagasEvaluator(metrics=["context_relevance", "context_precision"])
 
-        expected_scores = {"faithfulness": 0.95, "answer_relevancy": 0.88}
+        expected_scores = {"context_relevance": 0.95, "context_precision": 0.88}
         evaluator._run_ragas = MagicMock(return_value=expected_scores)  # type: ignore[method-assign]
 
         result = evaluator.evaluate(
             query="What is RAG?",
             retrieved_chunks=[{"text": "RAG is Retrieval Augmented Generation"}],
-            generated_answer="RAG stands for Retrieval Augmented Generation.",
+            generated_answer="",
         )
 
         assert result == expected_scores
@@ -188,7 +176,7 @@ class TestRagasEvaluatorEvaluate:
     def test_evaluate_runtime_error_on_ragas_failure(self) -> None:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
         evaluator._run_ragas = MagicMock(  # type: ignore[method-assign]
             side_effect=Exception("LLM call failed"),
         )
@@ -197,24 +185,24 @@ class TestRagasEvaluatorEvaluate:
             evaluator.evaluate(
                 query="test",
                 retrieved_chunks=[{"text": "ctx"}],
-                generated_answer="answer",
+                generated_answer="",
             )
 
     def test_ground_truth_is_ignored(self) -> None:
         """Ragas should work fine even when ground_truth is provided."""
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
-        evaluator = RagasEvaluator(metrics=["faithfulness"])
-        evaluator._run_ragas = MagicMock(return_value={"faithfulness": 0.9})  # type: ignore[method-assign]
+        evaluator = RagasEvaluator(metrics=["context_relevance"])
+        evaluator._run_ragas = MagicMock(return_value={"context_relevance": 0.9})  # type: ignore[method-assign]
 
         result = evaluator.evaluate(
             query="test",
             retrieved_chunks=[{"text": "ctx"}],
-            generated_answer="answer",
+            generated_answer="",
             ground_truth=["chunk_001"],  # should be ignored
         )
 
-        assert "faithfulness" in result
+        assert "context_relevance" in result
 
 
 class TestRagasEvaluatorFactory:
@@ -227,7 +215,7 @@ class TestRagasEvaluatorFactory:
         settings = MagicMock()
         settings.evaluation.enabled = True
         settings.evaluation.provider = "ragas"
-        settings.evaluation.metrics = ["faithfulness"]
+        settings.evaluation.metrics = ["context_relevance"]
 
         evaluator = EvaluatorFactory.create(settings)
         assert isinstance(evaluator, RagasEvaluator)
@@ -292,3 +280,59 @@ class TestRagasOllamaJudge:
             # llm_factory called with granite model
             factory_args = mock_llms_mod.llm_factory.call_args.args
             assert "granite4.1:8b" in factory_args
+
+
+class TestRagasMetricRouting:
+    """Tests that RagasEvaluator routes to context_relevance / context_precision."""
+
+    def test_supported_metrics_replaced(self) -> None:
+        """SUPPORTED_METRICS should now be context_relevance + context_precision."""
+        from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
+        assert SUPPORTED_METRICS == {
+            "context_relevance", "context_precision",
+        }
+
+    def test_context_relevance_called(self) -> None:
+        """_run_ragas with context_relevance should call ContextRelevance.score."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_relevance"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = 0.8
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.ContextRelevance"
+        ) as mock_cr, patch.object(
+            evaluator, "_build_wrappers", return_value=(MagicMock(), MagicMock())
+        ):
+            mock_cr.return_value = fake_metric
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx text"], answer="",
+            )
+
+        assert scores["context_relevance"] == 0.8
+        mock_cr.return_value.score.assert_called_once()
+
+    def test_no_answer_required_for_context_relevance(self) -> None:
+        """evaluate() should NOT raise when generated_answer is empty."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_relevance"]
+        evaluator.settings = MagicMock()
+
+        with patch.object(
+            evaluator, "_run_ragas", return_value={"context_relevance": 0.7}
+        ) as mock_run:
+            metrics = evaluator.evaluate(
+                query="q",
+                retrieved_chunks=[{"id": "c1", "text": "ctx"}],
+                generated_answer="",
+            )
+
+        assert metrics["context_relevance"] == 0.7

@@ -1,8 +1,7 @@
 """Ragas-based evaluator for RAG quality assessment.
 
 This evaluator wraps the Ragas framework to compute LLM-as-Judge metrics:
-- Faithfulness: Does the answer stick to the retrieved context?
-- Answer Relevancy: Is the answer relevant to the query?
+- Context Relevance: Are the retrieved contexts relevant to the query?
 - Context Precision: Are the retrieved chunks relevant and well-ordered?
 
 Design Principles:
@@ -13,6 +12,24 @@ Design Principles:
 
 from __future__ import annotations
 
+# ── ragas 0.4.3 import workaround ──────────────────────────────────
+# ragas eagerly imports langchain_community.chat_models.vertexai during its
+# own import; that package is not installed here. Inject a stub so the import
+# succeeds. (Mirrors the agentic-rag-for-dummies evaluation notebook.)
+import sys as _sys
+import types as _types
+try:  # pragma: no cover — only triggers when langchain_community is missing vertexai
+    import langchain_community.chat_models.vertexai  # type: ignore  # noqa: F401
+except ModuleNotFoundError:  # pragma: no cover
+    if "langchain_community.chat_models.vertexai" not in _sys.modules:
+        _stub = _types.ModuleType("langchain_community.chat_models.vertexai")
+
+        class _ChatVertexAI:  # minimal stub
+            pass
+
+        _stub.ChatVertexAI = _ChatVertexAI  # type: ignore
+        _sys.modules["langchain_community.chat_models.vertexai"] = _stub
+
 import logging
 import os
 from typing import Any, Dict, List, Optional, Sequence
@@ -22,11 +39,10 @@ from src.libs.evaluator.base_evaluator import BaseEvaluator
 logger = logging.getLogger(__name__)
 
 # Metric name constants
-FAITHFULNESS = "faithfulness"
-ANSWER_RELEVANCY = "answer_relevancy"
+CONTEXT_RELEVANCE = "context_relevance"
 CONTEXT_PRECISION = "context_precision"
 
-SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION}
+SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION}
 
 
 def _import_ragas() -> None:
@@ -44,11 +60,10 @@ class RagasEvaluator(BaseEvaluator):
     """Evaluator that uses the Ragas framework for LLM-as-Judge metrics.
 
     Ragas does NOT require ground-truth labels.  It uses an LLM to judge
-    the quality of the generated answer against the retrieved context.
+    the quality of the retrieved context against the query.
 
     Supported metrics:
-        - faithfulness: Measures factual consistency with context.
-        - answer_relevancy: Measures how relevant the answer is to the query.
+        - context_relevance: Measures relevance of retrieved contexts to query.
         - context_precision: Measures relevance/ordering of retrieved chunks.
 
     Example::
@@ -57,9 +72,8 @@ class RagasEvaluator(BaseEvaluator):
         metrics = evaluator.evaluate(
             query="What is RAG?",
             retrieved_chunks=[{"id": "c1", "text": "RAG is ..."}],
-            generated_answer="RAG stands for ...",
         )
-        # metrics == {"faithfulness": 0.95, "answer_relevancy": 0.88, ...}
+        # metrics == {"context_relevance": 0.95, "context_precision": 0.88, ...}
     """
 
     # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
@@ -139,7 +153,8 @@ class RagasEvaluator(BaseEvaluator):
         Args:
             query: The user query string.
             retrieved_chunks: Retrieved chunks (dicts with 'text' key or strings).
-            generated_answer: The generated answer text. Required for Ragas.
+            generated_answer: The generated answer text. Optional; not required
+                for context_relevance. Falls back to query for context_precision.
             ground_truth: Ignored by Ragas (not needed for LLM-as-Judge).
             trace: Optional TraceContext for observability.
             **kwargs: Additional parameters.
@@ -148,16 +163,14 @@ class RagasEvaluator(BaseEvaluator):
             Dictionary mapping metric names to float scores (0.0 – 1.0).
 
         Raises:
-            ValueError: If query/chunks are invalid or generated_answer is missing.
+            ValueError: If query/chunks are invalid.
         """
         self.validate_query(query)
         self.validate_retrieved_chunks(retrieved_chunks)
 
-        if not generated_answer or not generated_answer.strip():
-            raise ValueError(
-                "RagasEvaluator requires a non-empty 'generated_answer'. "
-                "Ragas uses LLM-as-Judge and needs the answer text to evaluate."
-            )
+        # Note: this system does not generate answers (retrieval + citation only).
+        # context_relevance needs no answer; context_precision receives query as
+        # response fallback (see _run_ragas). So empty answer is allowed.
 
         contexts = self._extract_texts(retrieved_chunks)
 
@@ -181,33 +194,30 @@ class RagasEvaluator(BaseEvaluator):
 
         Ragas 0.4+ collections metrics use per-metric ``score()`` instead of
         the legacy ``evaluate()`` pipeline.  Each metric has its own signature:
-        - Faithfulness / ContextPrecision: (user_input, response, retrieved_contexts)
-        - AnswerRelevancy: (user_input, response)
+        - ContextRelevance: (user_input, retrieved_contexts)
+        - ContextPrecision: (user_input, response, retrieved_contexts)
         """
-        from ragas.metrics.collections import (
-            Faithfulness,
-            AnswerRelevancy,
-            ContextPrecisionWithoutReference,
-        )
+        from ragas.metrics.collections import ContextRelevance, ContextPrecision
 
-        # Build LLM / Embedding wrappers from settings
+        # Build LLM / Embedding wrappers from settings (ollama judge by default)
         llm, embeddings = self._build_wrappers()
 
         scores: Dict[str, float] = {}
 
         for metric_name in self._metric_names:
-            if metric_name == FAITHFULNESS:
-                m = Faithfulness(llm=llm)
+            if metric_name == CONTEXT_RELEVANCE:
+                m = ContextRelevance(llm=llm)
                 result = m.score(
-                    user_input=query, response=answer, retrieved_contexts=contexts,
+                    user_input=query, retrieved_contexts=contexts,
                 )
-            elif metric_name == ANSWER_RELEVANCY:
-                m = AnswerRelevancy(llm=llm, embeddings=embeddings)
-                result = m.score(user_input=query, response=answer)
             elif metric_name == CONTEXT_PRECISION:
-                m = ContextPrecisionWithoutReference(llm=llm)
+                m = ContextPrecision(llm=llm)
+                # This system does not generate answers; pass response as the
+                # query text so the judge ranks contexts by query relevance.
                 result = m.score(
-                    user_input=query, response=answer, retrieved_contexts=contexts,
+                    user_input=query,
+                    response=answer or query,
+                    retrieved_contexts=contexts,
                 )
             else:
                 continue
@@ -237,7 +247,7 @@ class RagasEvaluator(BaseEvaluator):
             base_url = self._resolve_ollama_base_url()
             client = AsyncOpenAI(base_url=base_url, api_key="ollama")
             llm = llm_factory(self._JUDGE_MODEL, client=client, max_tokens=8192)
-            # Ollama embeddings for AnswerRelevancy (if used) — reuse same endpoint.
+            # Ollama embeddings — reuse same endpoint.
             # nomic-embed-text is the project's embedding model.
             embeddings = OpenAIEmbeddings(
                 model="nomic-embed-text", client=client,
