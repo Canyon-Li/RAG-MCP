@@ -277,9 +277,11 @@ class TestRagasOllamaJudge:
             call_kwargs = mock_openai.call_args.kwargs
             assert "localhost:11434" in call_kwargs["base_url"]
             assert call_kwargs["api_key"] == "ollama"
-            # llm_factory called with granite model
+            # llm_factory called with the configured judge model (default llama3,
+            # overridable via RAGAS_JUDGE_MODEL env). Don't pin the model name —
+            # assert it's the class's resolved _JUDGE_MODEL value.
             factory_args = mock_llms_mod.llm_factory.call_args.args
-            assert "granite4.1:8b" in factory_args
+            assert RagasEvaluator._JUDGE_MODEL in factory_args
 
 
 class TestRagasMetricRouting:

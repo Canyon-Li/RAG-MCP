@@ -78,7 +78,7 @@ class RagasEvaluator(BaseEvaluator):
 
     # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
     # Configured via env vars so the judge is stable across provider swaps.
-    _JUDGE_MODEL = "granite4.1:8b"
+    _JUDGE_MODEL = os.environ.get("RAGAS_JUDGE_MODEL", "llama3")
     _JUDGE_DEFAULT_BASE_URL = "http://localhost:11434/v1"
 
     @staticmethod
