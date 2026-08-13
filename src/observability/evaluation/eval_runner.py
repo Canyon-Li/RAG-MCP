@@ -285,12 +285,15 @@ class EvalRunner:
             answer = self._generate_answer(test_case.query, retrieved_chunks)
         qr.generated_answer = answer
 
-        # Step 3: Build ground truth
-        ground_truth = (
-            {"ids": test_case.expected_chunk_ids}
-            if test_case.expected_chunk_ids
-            else None
-        )
+        # Step 3: Build ground truth — always a dict so source-level metrics
+        # (which read ground_truth["sources"]) work even when chunk ids absent.
+        ground_truth: Dict[str, Any] = {}
+        if test_case.expected_chunk_ids:
+            ground_truth["ids"] = test_case.expected_chunk_ids
+        if test_case.expected_sources:
+            ground_truth["sources"] = test_case.expected_sources
+        if not ground_truth:
+            ground_truth = None
 
         # Step 4: Evaluate
         try:
