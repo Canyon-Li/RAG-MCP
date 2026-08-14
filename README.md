@@ -10,6 +10,8 @@
 
 > 这是一个学习导向、面向面试的实战项目，不是经过线上验证的生产系统。重点在架构思路和设计判断，不在功能堆砌。
 
+> **当前默认配置是「纯本地英文文献 RAG」场景**：LLM / Embedding / Vision 全部走本地 Ollama，私有 PDF 不出机器。这不是写死的——换一个 `provider` 字段就能切回云端（智谱 / OpenAI / Azure / DeepSeek / Qwen），见 [几个关键设计](#几个关键设计) 和 [config/settings.yaml](config/settings.yaml)。
+
 ---
 
 ## 目录
@@ -44,8 +46,8 @@
 ### 前提
 
 - **Python ≥ 3.10**，推荐用 conda 管理环境（系统 Python 和 chromadb 经常打架）
-- 一个 LLM Provider 的 API Key，默认走智谱 GLM（OpenAI 兼容），也可以切 OpenAI / Azure / DeepSeek / Ollama / Qwen
-- 如果要处理含图的 PDF，需要本地起一个 Ollama（用来生成图片描述）
+- **本地 Ollama**（默认配置）：LLM 用 `granite4.1:8b`、Embedding 用 `nomic-embed-text`、Vision 用 `llava-phi3:3.8b`。先 `ollama serve` 再 `ollama pull <model>` 拉好这三个模型。
+- 想走云端也行：切 OpenAI / Azure / DeepSeek / 智谱 / Qwen，把对应 `provider` 和 API Key 填进 [config/settings.yaml](config/settings.yaml) 即可（Key 从环境变量读）。
 
 ### 1. 安装
 
@@ -59,25 +61,30 @@ pip install -e ".[dev]"
 
 ### 2. 配置后端
 
-所有后端选择（LLM / Embedding / Vision / Parser / Reranker / VectorStore）都写在 [config/settings.yaml](config/settings.yaml) 里。换后端就是改配置，不用动代码。
+所有后端选择（LLM / Embedding / Vision / Parser / Reranker / VectorStore）都写在 [config/settings.yaml](config/settings.yaml) 里。换后端就是改配置，不用动代码。仓库自带的 settings.yaml 已经是「纯本地英文文献」这一档默认值，开箱可跑；要切云端或别的 parser，改 `provider` 字段即可。
 
-如果不想手动填，可以在 Copilot / Claude 对话框里输入 `setup`，它会引导你选 Provider、写 API Key、生成配置文件，大概两分钟。
-
-最小配置片段（完整版见 [config/settings.yaml](config/settings.yaml)）：
+最小配置片段（与当前 [config/settings.yaml](config/settings.yaml) 对齐）：
 
 ```yaml
 llm:
-  provider: "zhipu"            # OpenAI 兼容；API Key 从 ZHIPUAI_API_KEY 读
-  model: "glm-4-flash"
+  provider: "ollama"           # 绝对本地，私有 PDF 不出机器（场景决策见 DEV_CHANGELOG D-024）
+  model: "granite4.1:8b"
+  base_url: "http://localhost:11434/v1"   # /v1 供 vision/embedding 的 OpenAI 兼容端点；文本 LLM 自动剥 /v1 用原生 /api/chat
 embedding:
-  provider: "ollama"           # 本地 nomic-embed-text；httpx 需 trust_env=False 绕系统代理
+  provider: "ollama"           # 本地 nomic-embed-text；httpx 需 trust_env=False 绕系统代理（D-014）
   model: "nomic-embed-text"
+  dimensions: 768
+vision_llm:
+  provider: "ollama"           # 含图 PDF 的图片描述（D-020）
+  model: "llava-phi3:3.8b"
 vector_store:
   provider: "chroma"
   collection_name: "knowledge_hub"
 ingestion:
   parser:
     provider: "docling"        # 矢量图 bbox 渲染；降级链 docling→pdf_text
+  chunk_refiner:
+    use_llm: false             # 策略 C：溯源优先，关掉 LLM 精炼层（D-026）
 ```
 
 ### 3. 摄取、查询、启动服务
@@ -217,6 +224,35 @@ delete_document(path)
 - **文件级**：SHA256 存在 FileIntegrity 里，没改过的文件直接跳过，增量摄取几乎是零成本。
 - **chunk 级**：`chunk_id = {doc_id}_{index:04d}_{content_hash8}` 是确定性生成的，upsert 天然幂等，重复摄取不会产生重复向量。
 
+### 4. 英文 BM25 分词：单一 tokenizer + Porter stemmer，索引和查询必须对齐
+
+BM25 是稀疏检索，**索引侧切成什么 term，查询侧就得切成什么 term，否则查了等于没查**。这个项目一开始只有中文，分词用的是 jieba，英文只是顺手切一下。等切到「英文文献」场景，这个顺手切法立刻暴露两类问题：
+
+1. **同源词不收敛**：`optimization` / `optimize` / `optimizing` 在 jieba 眼里是三个不同的 token，查 `optimize` 召不回索引里的 `optimization`。
+2. **索引/查询两侧分词逻辑漂移**：SparseEncoder 和 QueryProcessor 各写一份 `_tokenize`，一开始就长歪了——索引侧保留 TF（不去重），查询侧去重；索引侧 `min_term_length=2`，查询侧 `=1`。结果是查询 token 经常落在索引从来不存的集合里，**零召回噪声**。
+
+这里的做法是把分词收口到**一个公共 tokenizer**（`src/core/text/tokenizer.py`），索引侧和查询侧都调用它，只是参数不同：
+
+```
+src/core/text/
+├── porter_stemmer.py  → 零依赖 Porter stemmer（Porter 1980，纯 Python 实现）
+└── tokenizer.py       → tokenize() 单一真相源
+```
+
+设计纪律是这样的（`tokenize()` 一个函数解决）：
+
+| 约束 | 怎么实现 |
+|---|---|
+| 同源词收敛 | Porter stemmer：`optimization`/`optimize` → `optim` |
+| 技术词不被切碎 | `C++` / `C#` 这种带符号的 token 走 `_TECH_TOKEN_RE` 整体保留，绕过标点切分 |
+| 停用词 stem 后也能滤掉 | 停用词先 stem 再建集合（`used`→`us`、`because`→`becaus` 都会被滤） |
+| 索引/查询对齐 | 两边都用 `tokenize()`；索引侧 `dedupe=False`（保留 TF），查询侧 `dedupe=True` |
+| 不产生零召回 term | 查询侧 `min_term_length=2` 对齐索引侧，单字不进 keyword |
+
+> **纪律级约束**：查询侧 keyword 必须是索引侧 term 的子集。这不是惯例，是 BM25 召回的**充要条件**，有一个跨层测试（`tests/unit/test_query_processor.py::TestCrossLayerTokenization`）专门守这条不变量——任何破坏对齐的改动都会被它拦下来。
+
+为什么不直接上 NLTK / spaCy？因为这是「绝对本地」场景，多一个依赖就多一个联网下载的口子（NLTK 要下语料、spaCy 要下模型）。Porter 算法是 1980 年的论文，零依赖纯实现就两三百行，够用且可控。
+
 ---
 
 ## 工程上做了什么
@@ -281,7 +317,7 @@ ruff check . && mypy src     # lint + 类型检查
 
 ## 相关文档
 
-- [DEV_CHANGELOG.md](DEV_CHANGELOG.md) — 这个项目的设计决策真相源：每条决策记背景/备选/理由/代价（D-001 ~ D-023）。「为什么这么定」看这里
+- [DEV_CHANGELOG.md](DEV_CHANGELOG.md) — 这个项目的设计决策真相源：每条决策记背景/备选/理由/代价（D-001 ~ D-026）。「为什么这么定」看这里（纯本地切换看 D-024、英文分词改造看 D-025、chunk_refiner 关 LLM 看D-026）
 - [CLAUDE.md](CLAUDE.md) — AI Agent 协作指引（架构约定、命令、易踩的坑）
 
 ---
