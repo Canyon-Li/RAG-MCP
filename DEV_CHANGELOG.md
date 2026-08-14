@@ -27,7 +27,7 @@
 | D-010 | 2026-07-14 | pdf_table provider：pdfplumber 原生表格 + 降级链 | 采纳 | a6362f5 (K4′) |
 | D-011 | 2026-07-15 | 默认 parser 升级 pdf_table → docling | 采纳 | 0791b79 |
 | D-012 | 2026-07-16 | docling_vlm：放弃 ollama 远程，走本地 transformers | 采纳 | 4f0c7e2 |
-| D-013 | 2026-07-15 | 默认 LLM 切 Zhipu glm-4-flash | 采纳 | b80907c |
+| D-013 | 2026-07-15 | 默认 LLM 切 Zhipu glm-4-flash | 已被 D-024 取代 | b80907c |
 | D-014 | 2026-07-15 | embedding 切本地 ollama + httpx trust_env=False | 采纳 | 14318b8 |
 | D-015 | 2026-07-15 | vision_llm 默认 disabled | 已被 D-020 取代 | [settings.yaml](config/settings.yaml#L35) |
 | D-016 | 2026-07 | 运行环境用 conda，不建 .venv | 采纳 | memory: runtime-env-conda |
@@ -38,6 +38,9 @@
 | D-021 | 2026-07-21 | tags 过滤改为 post-fusion-only（剥离 pre-fusion + 读逗号字符串，存储层不动） | 采纳 | fix/tags-filter |
 | D-022 | 2026-07-22 | filter pre/post 双层语义对齐：collection/source_path 走 post-fusion（修 N1 杀零 + N3 不一致） | 采纳 | 5a12c8b, 4a3e96d |
 | D-023 | 2026-07-22 | QueryProcessor filter 解析收口：未识别 word:value 不当 generic filter + 删单字母别名（修 N4） | 采纳 | 548d508, 7763c04 |
+| D-024 | 2026-08-13 | 默认 LLM 从云端 Zhipu 切本地 ollama granite4.1:8b（场景驱动：绝对本地/防泄露） | 采纳 | PR #7 |
+| D-025 | 2026-08-13 | 英文 BM25 分词改造：公共 tokenizer + 零依赖 Porter stemmer（索引/查询单一真相源） | 采纳 | PR #7 |
+| D-026 | 2026-08-13 | chunk_refiner 关闭 LLM 精炼层（策略 C：溯源优先确定性，规则层恒执行） | 采纳 | PR #7 |
 
 ---
 
@@ -107,6 +110,34 @@
 - **决策**：项目跑在 conda env `langchain-test`，**不要建 `.venv`**。
 - **理由**：chromadb 对 Python 版本敏感，需要一个受控的、版本合适的解释器。
 - **关联**：memory: runtime-env-conda。
+
+### D-024 默认 LLM 从云端 Zhipu 切本地 ollama granite4.1:8b（场景驱动：绝对本地）
+- **状态**：采纳。
+- **背景**：D-013 把默认 LLM 定为云端智谱 glm-4-flash。新场景"纯本地 + 英文学术文献 + 溯源检索"要求**私有 PDF 不得出本机**——这与云端 LLM 直接冲突。需要把主 LLM 也挪到本地 ollama（embedding/vision 已先后本地化，见 D-014 / D-020）。
+- **备选**：① 保持云端但只传摘要/片段（治标，仍泄露）；② 主走本地、答案生成留云端（但本场景明确不要综述，LLM 只服务 ingestion）；③ **全本地**。
+- **决策**：选 ③。`llm.provider: zhipu` → `ollama`，`model: granite4.1:8b`。`OllamaLLM` 早已注册（D-002 Factory），`trust_env` 在 D-014 已就绪（embedding/vision 侧）。
+- **理由**：本场景里 LLM **只服务 ingestion 阶段**（chunk 精炼/元数据），**不服务查询阶段的答案生成**（场景明确不要综述，见 [spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md)）。所以本地 8B "推理慢"只影响一次性 ingest，不影响日常查询——这是本场景对本地化特别友好的地方。granite4.1:8b 在结构化抽取（标题/摘要/tags）任务上够用。
+- **代价 / 现状**：PR #7 `feat/local-english-literature-rag`。**code-review 暴露的预存 bug（已随本决策修复）**：`OllamaLLM._call_api`（文本 LLM 路径）历史遗留**缺 `trust_env=False`**（D-014 只补了 embedding/vision）——配置切到 ollama 后一旦文本 LLM 真被调用（`evaluation.enabled: true`）即踩 D-014 同款代理坑 502；且构造器不读 `settings.llm.base_url`（死配置），endpoint 是原生 `/api/chat` 而非 `/v1`，settings 的 `/v1` 后缀需剥离。两处已在同 PR 补齐 + 加 4 个测试锁住。
+- **关联**：[ollama_llm.py](src/libs/llm/ollama_llm.py)；[settings.yaml](config/settings.yaml)；[spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md)。与 [[D-013]]（被取代）、[[D-014]]（trust_env 模式源）、[[D-020]]（vision 本地化前置）关联。运行时前置：`ollama pull granite4.1:8b`。
+
+### D-025 英文 BM25 分词改造：公共 tokenizer + 零依赖 Porter stemmer（索引/查询单一真相源）
+- **状态**：采纳。
+- **背景**：原 BM25 分词两侧都用 `jieba.lcut`——jieba 是中文分词器，对英文只是"原样保留"：**无词干化**（`optimization`/`optimize`/`optimal` 算 4 个不同 term，查一个召不回另三个）、**停用词处理弱**。对英文学术文献场景，BM25 召回质量明显打折。更隐蔽的问题是两侧 `_tokenize` **逻辑各自实现**，已有不一致风险。
+- **备选**：① 换 BM25 库（rank_bm25 / bm25s，自带英文 tokenizer）——要适配现有 JSON 倒排索引结构，改动大；② 引 nltk / snowballstemmer——重依赖；③ **抽公共 tokenizer + 零依赖纯 Python Porter stemmer**。
+- **决策**：选 ③。新增 `src/core/text/tokenizer.py` 的 `tokenize()` + `porter_stemmer.py` 的 `stem()`，作为**索引侧 `SparseEncoder` 与查询侧 `QueryProcessor` 共用的唯一分词函数**。中文走 jieba（不 stem），英文走 lowercase→停用词→Porter stem→长度过滤，双语并行。
+- **理由**：**两侧共用同一函数是 BM25 召回的硬前提**——索引存的 term 必须和查询查的 term 一致，否则永远召不回。抽成单一真相源比"两侧各写一份保持同步"可靠。选零依赖 Porter 而非 nltk：本项目是学习/面试项目，引 nltk 太重，Porter 单文件纯 Python 几十行即够（BM25 场景 Porter 足够好）。双语并行而非纯英文：保留中文能力，万一中文提问也能命中，改动成本相同。
+- **代价 / 现状**：PR #7。**关键设计取舍**（经终审 + code-review 修正后定型）：① `dedupe` 参数——索引侧 `dedupe=False` 保真词频（BM25 TF 信号，终审发现去重把 tf 抹成 1 的回归）；查询侧默认 `dedupe=True`。② 有意不对称——query 侧 `min_term_length=2` 对齐 index（code-review V3：旧 query=1 产生 index 不存的单字 term 零召回）。**分词逻辑变了，旧 BM25 索引失效，重新 ingest 必须 `--force`**。136 直接相关测试全绿，跨层一致性测试 `test_query_and_index_tokenization_match` 是召回保证的安全网（reviewer trace 确认非空转）。
+- **实现期踩坑（code-review 高严重度，已修）**：① **V2** `_SPLIT_RE` 把 `C++`/`C#`/`R-CNN` 拆碎→技术符号 token 整体保留（`_TECH_TOKEN_RE`，纯字母词仍走 stem）；② **V4** use 家族 `used/using/uses` stem 到 `us`（非停用词 `use`）成近零 IDF 垃圾词→停用词表补 stem 后形态（`_build_stemmed_stopwords`）拦截。已知局限：连字符词 `K-Means` 被 jieba 预拆成 `['K','-','Means']`，需预粘合才完整可检索，超出本次范围。
+- **关联**：[tokenizer.py](src/core/text/tokenizer.py) / [porter_stemmer.py](src/core/text/porter_stemmer.py)；[sparse_encoder.py](src/ingestion/embedding/sparse_encoder.py) / [query_processor.py](src/core/query_engine/query_processor.py)；[spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md)。停用词表仍定义在 query_processor（后续可挪到 `src/core/text/`，见 D-017 同类"待整理"债）。
+
+### D-026 chunk_refiner 关闭 LLM 精炼层（策略 C：溯源优先确定性）
+- **状态**：采纳。
+- **背景**：`chunk_refiner` 有两层独立路径——**规则层**（恒执行，去 PDF 提取噪声：页眉分隔线/HTML 残留/空白规整，纯确定性不改文字）和 **LLM 层**（`use_llm: true` 时，prompt 虽克制地要求"保留原意"，但仍是概率性精炼）。新场景核心诉求是**溯源回论文原话**，对"文本被模型动过"零容忍。
+- **备选**：① 保持 LLM 层（信任 prompt 约束）；② 永久关闭；③ **策略 C：先关，跑一轮看 chunk 质量不满意再开**。
+- **决策**：选 ③ 的第一步——`ingestion.chunk_refiner.use_llm: false`。规则层恒执行（`use_llm` 只控制 LLM 分支），所以只是关掉概率性精炼。
+- **理由**：溯源场景优先**确定性**——即便 prompt 明令禁止改写，8B 模型实际执行仍可能微调措辞（标点/冠词），有破坏逐字溯源的风险；而 docling + section-aware chunker 产出的学术文本已足够干净，LLM 精炼的边际收益小。关掉还顺带省一次性 ingest 的本地推理时间。选策略 C 而非 ②：留观察窗口，若规则层不够干净（断句/连字符残留）再开。
+- **代价 / 现状**：PR #7。`metadata_enricher.use_llm` 保持 `false`（tags/summary 不参与召回，本地 8B 逐 chunk 生成纯浪费 ingest 时间）。rerank 保持 `enabled: false`（场景是召回+溯源非精排喂生成，< 50 篇小库噪音不明显）。三者共同构成"本场景比通用 RAG 更轻"的减负。
+- **关联**：[chunk_refiner.py](src/ingestion/transform/chunk_refiner.py)；[settings.yaml](config/settings.yaml)；[spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md) §3.3.1。与 [[D-005]]（graceful degradation 规则）一致——规则层是确定性兜底。
 
 ---
 
