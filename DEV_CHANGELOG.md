@@ -41,6 +41,7 @@
 | D-024 | 2026-08-13 | 默认 LLM 从云端 Zhipu 切本地 ollama granite4.1:8b（场景驱动：绝对本地/防泄露） | 采纳 | PR #7 |
 | D-025 | 2026-08-13 | 英文 BM25 分词改造：公共 tokenizer + 零依赖 Porter stemmer（索引/查询单一真相源） | 采纳 | PR #7 |
 | D-026 | 2026-08-13 | chunk_refiner 关闭 LLM 精炼层（策略 C：溯源优先确定性，规则层恒执行） | 采纳 | PR #7 |
+| D-027 | 2026-08-14 | DoclingParser 分批转换（每批新 converter，默认批 8）修长文档 std::bad_alloc 静默缺页 | 采纳 | feat/eval-speedup |
 
 ---
 
@@ -94,6 +95,15 @@
 - **理由（踩坑）**：C2 实测不可行——granite-docling 是 **completion** 模型，ollama 的 chat template 会破坏输出（`<loc_>` 无 `<doctag>`），已放弃。另外 HF cache 钉 ASCII 路径是为了**避开中文 user 目录**导致的加载问题。
 - **现状**：C1 实测中文表格识别偏弱（1/5 表），目前定位在**扫描件/图片型表格**这一 pdfplumber/docling 搞不定的场景。
 - **教训**：completion 模型不能直接套 chat template——这类"模型类型不匹配"的坑值得记。
+
+### D-027 DoclingParser 分批转换（每批新 converter，修长文档 std::bad_alloc 静默缺页）
+- **状态**：采纳。
+- **背景**：16G 内存机器 ingest 35 页论文，docling `Stage preprocess failed: std::bad_alloc` 从第 ~10 页起逐页失败，且 **pipeline 照样报 ✅ 成功**——静默丢失 2/3 正文（实测 doc4 每页仅 933 字符 vs 正常 4000+）。三次对照实验定位根因：①全文档 1-9 成功 10 起全挂；②同进程分批（每批新 converter）1-9 + 10-18 成功，19 起挂；③新进程单独转 10-35，同样 10-18 成功 19 起挂。结论：**页面本身无异常（失败页与成功页结构同质），是 docling 预处理阶段的累积型内存耗尽，阈值 ~9 页/converter**（ONNX runtime arena 只增不还），新 converter 实例确实能重置累积。
+- **备选**：A = 受影响文档走 D-011 降级链换 pdf_text（文本全但丢布局/表格/矢量图）；B = 分批转换，每批新建 converter；C = 等 docling 上游修（不可控）。
+- **决策**：选 B。`_extract_with_docling` 按 `page_range=(start, end)` 分批 convert，**每批一个全新 `DocumentConverter()`**（释放累积内存的核心），批大小 `page_batch_size` 默认 8（< 实测阈值 9，留 1 页安全边际），构造参数可覆盖。页数 ≤ 批大小或页数读不到 → 单次无限制 convert（原行为，零回归）。批次级 try/except：后批失败保留前批已提取 sections（比全丢好），全部批次空才 fallback pdf_text。
+- **理由**：保住 docling 的布局/表格/矢量图能力（A 方案丢失的正是选 docling 的理由）；每批新 converter 有实验②直接证据；批大小 8 有实验①③的失败阈值数据支撑，不是拍的。
+- **代价 / 现状**：① 批边界可能截断跨页元素（跨页表格会被拆两半，本批语料论文表格基本页内，接受）；② 短文档多一次 fitz 打开读页数（微秒级，`_page_count` 失败时静默退回单批不炸）；③ caption/embedding 阶段不变。18/18 单测绿（4 个新测试：分批调用/每批新 converter/部分失败保留/批大小可配）；全库 1352 passed，10 个失败均为 main 预存（stash 对照验证）。
+- **关联**：[docling_parser.py](src/libs/parser/docling_parser.py)（`DEFAULT_PAGE_BATCH_SIZE`/`_page_batches`/`_page_count`）；[test_docling_parser.py](tests/unit/test_docling_parser.py)；降级链见 [[D-011]]。分支 `feat/eval-speedup`。
 
 ---
 

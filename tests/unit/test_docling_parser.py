@@ -5,6 +5,7 @@ heavy docling model stack. Covers: typed-section emission, table GFM in both
 text+html, picture-skip, label mapping, bbox, and pdf_text fallback.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -308,7 +309,12 @@ def test_parse_renders_figure_section_from_picture_item(settings, fake_pdf, tmp_
 
 
 def test_parse_no_rendering_when_extract_images_false(settings, fake_pdf, tmp_path):
-    """extract_images=False → fitz.open never called, no figure sections."""
+    """extract_images=False → no figure rendering, no figure sections.
+
+    NOTE: _page_count may still open the PDF via fitz (page-batched conversion
+    needs the page count regardless of images) — that read-only probe is not
+    image extraction, so this test mocks it out and asserts no figure output.
+    """
     items = [
         _make_item("TEXT", text="正文段落", page=1),  # non-figure so sections non-empty
         _make_item("PICTURE", page=2, bbox=(50, 50, 550, 400)),
@@ -316,14 +322,13 @@ def test_parse_no_rendering_when_extract_images_false(settings, fake_pdf, tmp_pa
     converter = _make_converter(items)
 
     with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
-         patch("src.libs.parser.docling_parser.fitz.open") as mock_open:
+         patch.object(DoclingParser, "_page_count", return_value=None):
         parser = DoclingParser(
             settings, collection="t",
             image_storage_dir=str(tmp_path / "images"), extract_images=False,
         )
         doc = parser.parse(fake_pdf)
 
-    mock_open.assert_not_called()
     sections = doc.metadata["sections"]
     assert all(s["type"] != "figure" for s in sections)
     assert doc.metadata.get("images", []) == []
@@ -369,3 +374,144 @@ def test_render_figure_region_returns_none_on_render_failure(settings, tmp_path)
         img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
 
     assert img is None
+
+
+# ── Page-batched conversion (docling memory accumulation workaround) ──────
+
+
+def _pdf_page_count(path) -> int:
+    """Total pages of a test PDF (fitz-free: count '/Type /Page' markers)."""
+    import re
+    data = Path(path).read_bytes()
+    return len(re.findall(rb"/Type\s*/Page[^s]", data)) or 1
+
+
+def _make_batch_converter(items_by_batch):
+    """DocumentConverter factory mock: each call returns a NEW converter that
+    yields the items of the next batch (len(items_by_batch) batches total).
+    Records (converter, page_range kwargs) per convert() call for assertions."""
+    calls = {"n": 0, "log": []}
+
+    class _Factory:
+        def __call__(self):
+            idx = calls["n"]
+            calls["n"] += 1
+            conv = _make_converter(items_by_batch[idx])
+            # track this converter's convert calls in the shared log
+            orig_convert = conv.convert
+
+            def _convert(*a, **kw):
+                calls["log"].append({"batch": idx, "kwargs": kw})
+                return orig_convert(*a, **kw)
+
+            conv.convert = _convert
+            return conv
+
+    factory = _Factory()
+    return factory, calls
+
+
+def test_batching_disabled_for_short_docs(settings, fake_pdf, tmp_path):
+    """Docs with fewer pages than page_batch_size convert in ONE call
+    (single converter, no page_range restriction) — existing behaviour."""
+    # 12-page PDF, batch size 8 → needs batching; use > to keep this test
+    # about the SHORT case: build a 3-page PDF by patching _page_count.
+    items = [_make_item("TEXT", text="all pages", page=2)]
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False), \
+         patch.object(DoclingParser, "_page_count", return_value=3):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    assert converter.convert.call_count == 1
+    # no page_range restriction on the single call
+    assert converter.convert.call_args[1].get("page_range", None) is None
+    assert len(doc.metadata["sections"]) == 1
+
+
+def test_long_doc_converted_in_batches_with_fresh_converters(
+    settings, fake_pdf, tmp_path
+):
+    """Pages > page_batch_size: convert() called once per page batch, each
+    with its 1-based inclusive page_range, and a NEW converter per batch."""
+    # 10-page doc, batch size 8 → batches (1,8) and (9,10)
+    batch_items = [
+        [_make_item("TEXT", text=f"page {p}", page=p) for p in (1, 3, 8)],
+        [_make_item("TEXT", text=f"page {p}", page=p) for p in (9, 10)],
+    ]
+    factory, calls = _make_batch_converter(batch_items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", factory), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False), \
+         patch.object(DoclingParser, "_page_count", return_value=10):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    assert calls["n"] == 2, "one fresh DocumentConverter per batch"
+    # each convert() call got its 1-based inclusive page_range, in order
+    ranges = [entry["kwargs"]["page_range"] for entry in calls["log"]]
+    assert ranges == [(1, 8), (9, 10)]
+    texts = [s["text"] for s in doc.metadata["sections"]]
+    assert texts == ["page 1", "page 3", "page 8", "page 9", "page 10"]
+
+
+def test_partial_batch_failure_keeps_earlier_batches(
+    settings, fake_pdf, tmp_path
+):
+    """If a LATER batch's convert() raises, sections from earlier batches
+    survive — no whole-document fallback when some content was extracted."""
+    batch_items = [
+        [_make_item("TEXT", text="page 1", page=1)],
+    ]
+    factory, _ = _make_batch_converter(batch_items)
+    boom = MagicMock()
+    boom.convert.side_effect = RuntimeError("bad_alloc on batch 2")
+
+    converters = iter([factory(), boom])
+
+    with patch(
+        "src.libs.parser.docling_parser.DocumentConverter",
+        side_effect=lambda: next(converters),
+    ), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False), \
+         patch.object(DoclingParser, "_page_count", return_value=10):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    texts = [s["text"] for s in doc.metadata["sections"]]
+    assert texts == ["page 1"]
+    assert doc.metadata.get("degraded") is not True  # not a pdf_text fallback
+
+
+def test_page_batch_size_is_configurable(settings, fake_pdf, tmp_path):
+    """page_batch_size kwarg changes the batching cadence."""
+    batch_items = [
+        [_make_item("TEXT", text="page 1", page=1)],
+        [_make_item("TEXT", text="page 2", page=2)],
+    ]
+    factory, calls = _make_batch_converter(batch_items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", factory), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False), \
+         patch.object(DoclingParser, "_page_count", return_value=2):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir=str(tmp_path / "images"), extract_images=False,
+            page_batch_size=1,
+        )
+        doc = parser.parse(fake_pdf)
+
+    assert calls["n"] == 2, "batch size 1 over a 2-page doc → 2 converters"
+    texts = [s["text"] for s in doc.metadata["sections"]]
+    assert texts == ["page 1", "page 2"]
