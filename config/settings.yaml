@@ -83,6 +83,7 @@ evaluation:
     - "source_precision_at_k"
     - "context_relevance"
     - "context_precision"
+    - "context_recall"
 
 # =============================================================================
 # Observability Configuration

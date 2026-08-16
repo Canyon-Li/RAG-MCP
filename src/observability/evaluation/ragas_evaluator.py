@@ -81,6 +81,12 @@ class RagasEvaluator(BaseEvaluator):
         # metrics == {"context_relevance": 0.95, "context_precision": 0.88, ...}
     """
 
+    # Route-discovery: CompositeEvaluator._backend_supported_metrics() peeks
+    # this CLASS attribute (hasattr(cls, "SUPPORTED_METRICS")) to route metrics
+    # per backend. Must stay a class attribute — a bare module-level constant
+    # alone is invisible to that lookup (CustomEvaluator does the same).
+    SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION, CONTEXT_RECALL}
+
     # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
     # Configured via env vars so the judge is stable across provider swaps.
     _JUDGE_DEFAULT_BASE_URL = "http://localhost:11434/v1"

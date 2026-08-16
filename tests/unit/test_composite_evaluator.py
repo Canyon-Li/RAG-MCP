@@ -171,3 +171,16 @@ class TestCompositeEvaluatorFactory:
             ground_truth=["c1"],
         )
         assert "hit_rate" in metrics
+
+
+class TestContextRecallRouting:
+    """context_recall routes to the ragas backend via SUPPORTED_METRICS."""
+
+    def test_backend_supported_metrics_includes_context_recall(self) -> None:
+        from src.observability.evaluation.composite_evaluator import CompositeEvaluator
+
+        supported = CompositeEvaluator._backend_supported_metrics("ragas")
+        assert "context_recall" in supported
+        # custom backend must NOT claim it (deterministic evaluator)
+        custom_supported = CompositeEvaluator._backend_supported_metrics("custom")
+        assert "context_recall" not in custom_supported
