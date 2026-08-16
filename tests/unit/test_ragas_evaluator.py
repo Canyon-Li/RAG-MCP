@@ -29,6 +29,7 @@ class TestRagasEvaluatorInit:
         evaluator = RagasEvaluator()
         assert set(evaluator._metric_names) == {
             "context_precision",
+            "context_recall",
             "context_relevance",
         }
 
@@ -62,7 +63,7 @@ class TestRagasEvaluatorInit:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         evaluator = RagasEvaluator(settings=None, metrics=None)
-        assert len(evaluator._metric_names) == 2
+        assert len(evaluator._metric_names) == 3
 
 
 class TestRagasImportCheck:
@@ -291,7 +292,7 @@ class TestRagasMetricRouting:
         """SUPPORTED_METRICS should now be context_relevance + context_precision."""
         from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
         assert SUPPORTED_METRICS == {
-            "context_relevance", "context_precision",
+            "context_relevance", "context_precision", "context_recall",
         }
 
     def test_context_relevance_called(self) -> None:
@@ -398,3 +399,66 @@ class TestRagasMetricRouting:
             )
 
         assert metrics["context_relevance"] == 0.7
+
+
+class TestContextRecallMetric:
+    """Tests for the context_recall metric branch in _run_ragas."""
+
+    def test_supported_metrics_includes_context_recall(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
+
+        assert "context_recall" in SUPPORTED_METRICS
+
+    def test_init_accepts_context_recall_metric(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["context_recall"])
+        assert evaluator._metric_names == ["context_recall"]
+
+    def test_run_ragas_calls_context_recall_with_reference(self) -> None:
+        """context_recall branch invokes ContextRecall.score with
+        (user_input, retrieved_contexts, reference) and records the value."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["context_recall"])
+        mock_result = MagicMock()
+        mock_result.value = 0.75
+
+        with patch(
+            "src.observability.evaluation.ragas_evaluator.RagasEvaluator._build_wrappers",
+            return_value=(MagicMock(), MagicMock()),
+        ), patch(
+            "ragas.metrics.collections.ContextRecall"
+        ) as MockContextRecall:
+            MockContextRecall.return_value.score.return_value = mock_result
+            scores = evaluator._run_ragas(
+                query="What is LCU?",
+                contexts=["LCU-based approach with query complexity O(1/sqrt(eps))."],
+                reference="The paper uses LCU with complexity O(1/sqrt(eps)).",
+            )
+
+        assert scores["context_recall"] == 0.75
+        MockContextRecall.return_value.score.assert_called_once_with(
+            user_input="What is LCU?",
+            retrieved_contexts=["LCU-based approach with query complexity O(1/sqrt(eps))."],
+            reference="The paper uses LCU with complexity O(1/sqrt(eps)).",
+        )
+
+    def test_run_ragas_context_recall_without_reference_scores_zero(self) -> None:
+        """Missing reference → warning logged, score 0.0 (symmetric with precision)."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["context_recall"])
+
+        with patch(
+            "src.observability.evaluation.ragas_evaluator.RagasEvaluator._build_wrappers",
+            return_value=(MagicMock(), MagicMock()),
+        ), patch(
+            "ragas.metrics.collections.ContextRecall"
+        ) as MockContextRecall:
+            scores = evaluator._run_ragas(
+                query="What is LCU?", contexts=["some context"], reference=None,
+            )
+
+        assert scores["context_recall"] == 0.0
+        MockContextRecall.return_value.score.assert_not_called()

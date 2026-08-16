@@ -44,8 +44,9 @@ logger = logging.getLogger(__name__)
 # Metric name constants
 CONTEXT_RELEVANCE = "context_relevance"
 CONTEXT_PRECISION = "context_precision"
+CONTEXT_RECALL = "context_recall"
 
-SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION}
+SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION, CONTEXT_RECALL}
 
 
 def _import_ragas() -> None:
@@ -214,8 +215,13 @@ class RagasEvaluator(BaseEvaluator):
         - ContextRelevance: (user_input, retrieved_contexts)
         - ContextPrecision (= ContextPrecisionWithReference):
           (user_input, retrieved_contexts, reference)
+        - ContextRecall: (user_input, retrieved_contexts, reference)
         """
-        from ragas.metrics.collections import ContextRelevance, ContextPrecision
+        from ragas.metrics.collections import (
+            ContextRelevance,
+            ContextPrecision,
+            ContextRecall,
+        )
 
         # Build LLM / Embedding wrappers from settings (ollama judge by default)
         llm, embeddings = self._build_wrappers()
@@ -236,6 +242,23 @@ class RagasEvaluator(BaseEvaluator):
                 if not reference:
                     logger.warning(
                         "context_precision skipped: no reference answer provided "
+                        "(golden set missing 'reference')."
+                    )
+                    scores[metric_name] = 0.0
+                    continue
+                result = m.score(
+                    user_input=query,
+                    retrieved_contexts=contexts,
+                    reference=reference,
+                )
+            elif metric_name == CONTEXT_RECALL:
+                m = ContextRecall(llm=llm)
+                # ContextRecall decomposes the reference into atomic claims
+                # and scores the fraction supported by the retrieved contexts.
+                # Symmetric with precision: missing reference → warn + 0.0.
+                if not reference:
+                    logger.warning(
+                        "context_recall skipped: no reference answer provided "
                         "(golden set missing 'reference')."
                     )
                     scores[metric_name] = 0.0
