@@ -1,6 +1,6 @@
 {
   "description": "Source-level golden test set for retrieval + provenance evaluation. expected_sources lists the paper file(s) that should appear in top-k retrieval for each query. reference is a short ground-truth answer used only as judge input for RAGAS context_precision (the system does not generate answers).",
-  "version": "2.0",
+  "version": "3.0",
   "test_cases": [
     {
       "query": "In the 2023 'New record in the number of qubits for a quantum implementation of AES' paper, how many qubits are required by the synthesized AES-128, AES-192, and AES-256 quantum circuits, and what prior record did they beat?",
@@ -67,6 +67,78 @@
       "reference": "The paper uses two composite-field architectures: F(24)2 (isomorphic to F28, with subfield F24) and the tower field F(22)2 (with subfield F22). The field polynomial of F24 is x^4 + x + 1, and F(24)2 uses x^2 + x + lambda where lambda = x^3 + x^2 + x in F24."
     },
     {
+      "query": "In the 2023 qubit-record paper, what optimization is applied to the uncomputation step of the S-box C1 circuit, and what effect does it have on gate counts and Toffoli depth?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "Because (p17)^-1 = (p^-1)^17, the ancilla (p17)^-1 is removed by applying only the inverse circuit U†p17, without needing F24 inv†1. This completes uncomputation with fewer Toffoli and CNOT gates and a lower Toffoli depth, so the C1 S-box circuit uses 20 qubits (vs 22) with 44 Toffoli / 197 CNOT / Toffoli depth 32, fewer than prior work."
+    },
+    {
+      "query": "In the IEEE Transactions on Computers 2024 paper on AES with an 'Interlacing-Uncompute Structure', what T-depth reduction does the proposed round structure achieve when used as an encryption oracle, compared to the previous round structure?",
+      "expected_sources": [
+        "Optimized-Quantum-Circuit-of-AES-with-Interlacing-Uncompute-Structure.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The Interlacing-Uncompute round structure reduces the T-depth from 2*r*d to (r+1)*d when employed as an encryption oracle (where r is the number of rounds and d the S-box T-depth). It also matches the pipeline structure's T-depth when used as a Grover oracle, while only incurring a constant-level increase in width."
+    },
+    {
+      "query": "In the 2024 Interlacing-Uncompute AES paper, what are the gate count and depth of the proposed in-place MixColumn circuit, and how does it improve on prior PLU- and elementary-matrix-based implementations?",
+      "expected_sources": [
+        "Optimized-Quantum-Circuit-of-AES-with-Interlacing-Uncompute-Structure.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "By exploiting the block-cyclic structure inherent in MixColumn, the authors present an in-place implementation using 105 CNOT gates and depth 10. This improves on the prior PLU-decomposition result of 277 CNOT gates / depth 39 (Grassl et al.) and on the 92-CNOT / depth-41 elementary-matrix decomposition of Huang & Sun, achieving much lower depth at a moderate gate count."
+    },
+    {
+      "query": "In the 2024 Interlacing-Uncompute AES paper, what S-box circuit widths are achieved at T-depths 3, 4, and 6, and how much are these widths reduced versus previous literature at the same T-depths?",
+      "expected_sources": [
+        "Optimized-Quantum-Circuit-of-AES-with-Interlacing-Uncompute-Structure.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "By efficiently reusing qubits, the authors propose optimized S-box circuits at T-depths of 3, 4, and 6. Compared with previous literature at the same T-depths, the widths are reduced by 37.5% (33.1%), 90.9% (84.4%), and 59.2%, respectively, enabling a favorable depth-width trade-off for the AES S-box."
+    },
+    {
+      "query": "In the 2023 'Optimized quantum implementation of AES' paper by Lin, Xiang et al., how many qubits do the constructed AES-128, AES-192, and AES-256 circuits require, and how does the gate set differ from Clifford+T works?",
+      "expected_sources": [
+        "Optimized-quantum-implementation-of-AES.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The paper builds the AES family with the NCT gate set (Pauli-X, CNOT, Toffoli) rather than Clifford+T. AES-128/-192/-256 can be constructed with 269/333/397 qubits respectively; allowing more qubits (474/538/602) yields circuits that outperform the state of the art in the T·M (Toffoli-depth × qubits) metric."
+    },
+    {
+      "query": "In the 2023 Lin/Xiang AES paper, what is the 'partial zig-zag' method and what is its purpose in the AES quantum circuit?",
+      "expected_sources": [
+        "Optimized-quantum-implementation-of-AES.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The partial zig-zag method investigates the implementation of AES with various numbers of S-boxes applied in parallel during SubBytes. It is used to study the trade-off between qubit consumption and the T·M value (Toffoli depth × number of qubits) for the round function and key schedule, allowing the designer to trade more qubits for lower T·M."
+    },
+    {
+      "query": "In Zhu and Huang's paper on optimizing the depth of quantum implementations of linear layers, what are the three characterizations of CNOT circuit depth that are introduced, and how do they relate?",
+      "expected_sources": [
+        "Optimizing-the-Depth-of-Quantum-Implementations-of-Linear-Layers.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The paper gives three characterizations of CNOT circuit depth: sequence depth (from the raw decomposition sequence), move-equivalent depth (obtained by moving gates forward/backward without changing the output, as used by tools like Microsoft Q#), and exchange-equivalent depth (obtained by also exchanging adjacent gates whose control/target qubits are disjoint). Move-equivalence is a special case of exchange-equivalence, and exchange-equivalence always yields a depth no larger than move-equivalence."
+    },
+    {
+      "query": "In the linear-layer depth optimization paper, how much can the method reduce the depth of the top and bottom linear layers of the AES S-box (tower-field structure), and what is the total depth reduction for one S-box?",
+      "expected_sources": [
+        "Optimizing-the-Depth-of-Quantum-Implementations-of-Linear-Layers.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "Applying the framework to the tower-field AES S-box, the depth of the top linear layer is reduced from 14 (previous best) to 8, and the bottom linear layer from 11 to 7, giving a total reduction of 10 in the linear layers of one AES S-box. Although modest per S-box, this compounds because the S-box is iterated throughout the AES circuit."
+    },
+    {
+      "query": "In the 2024 SM4 quantum circuit paper, how many qubits does the minimum-qubit SM4 implementation require, and why is this result noteworthy beyond SM4 itself?",
+      "expected_sources": [
+        "Quantum-circuit-implementations-of-SM4-block-cipher-optimizing-the-number-of-qubits.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The minimum-qubit SM4 quantum circuit uses only 260 qubits. The authors note this is the least number of qubits not only among SM4 quantum circuits, but also among block-cipher quantum circuits with an 8-bit S-box, 128-bit plaintext and 128-bit secret key (i.e., it is also lower than the best AES-128 figures at the time)."
+    },
+    {
       "query": "How do the AES qubit counts in the 2023 qubit-record paper compare to those in the 2022 Science China AES paper, and what key technique drove the further reduction?",
       "expected_sources": [
         "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf",
@@ -76,12 +148,50 @@
       "reference": "The 2023 paper further reduces AES-128/-192/-256 to 264/328/392 qubits, improving on the 2022 paper's 270/334/398. The reduction is driven by using LIGHTER-R to build the F24 multiplicative-inversion circuit for the S-box (C1/C2 at 20 qubits) and by introducing a direct 16-qubit in-place C4 S-box circuit (|a> -> |S(a)>), instead of the 2022 paper's 22-qubit C1/C2/C3 circuits."
     },
     {
-      "query": "In the 2023 qubit-record paper, what optimization is applied to the uncomputation step of the S-box C1 circuit, and what effect does it have on gate counts and Toffoli depth?",
+      "query": "Across the AES quantum-circuit literature, what in-place CNOT-circuit implementations have been proposed for the MixColumns linear transformation, and how do they trade off gate count against circuit depth?",
       "expected_sources": [
-        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf"
+        "Optimized-Quantum-Circuit-of-AES-with-Interlacing-Uncompute-Structure.pdf",
+        "Optimizing-the-Depth-of-Quantum-Implementations-of-Linear-Layers.pdf"
       ],
       "expected_chunk_ids": [],
-      "reference": "Because (p17)^-1 = (p^-1)^17, the ancilla (p17)^-1 is removed by applying only the inverse circuit U†p17, without needing F24 inv†1. This completes uncomputation with fewer Toffoli and CNOT gates and a lower Toffoli depth, so the C1 S-box circuit uses 20 qubits (vs 22) with 44 Toffoli / 197 CNOT / Toffoli depth 32, fewer than prior work."
+      "reference": "Two notable in-place MixColumns CNOT circuits exist: Zhang et al. (Interlacing-Uncompute, IEEE TC 2024) exploit the block-cyclic structure to get 105 CNOT gates at depth 10, while Zhu & Huang (linear-layer depth paper) keep the gate count at 92 CNOT gates (matching the best classical XOR count of Xiang et al.) and reduce the depth from 41 (sequence) / 30 (move-equivalent) to 28 (exchange-equivalent). The two represent different points on the gate-count vs. depth trade-off."
+    },
+    {
+      "query": "In recent quantum-circuit papers, what automated synthesis tools are used to build the GF(2^4) multiplicative-inversion circuit inside the AES and SM4 S-boxes, and why do they target the subfield GF(2^4) instead of synthesizing the full GF(2^8) inversion directly?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf",
+        "Quantum-circuit-implementations-of-SM4-block-cipher-optimizing-the-number-of-qubits.pdf",
+        "Optimized-quantum-implementation-of-AES.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "The tools LIGHTER / LIGHTER-R are used for the AES S-box (in both the 2023 qubit-record paper and the Lin/Xiang 2023 paper), while DORCIS is used for the SM4 S-box (Luo et al. 2024). They target GF(2^4) because the search space of an optimal qubit/gate circuit for the 4-bit inversion is small enough for the tools to handle, whereas directly synthesizing the 8-bit inversion over GF(2^8) is intractable for them; the GF(2^8) inversion is therefore mapped into the composite field GF((2^4)^2) first."
+    },
+    {
+      "query": "In the AES quantum-circuit literature, how does the choice of gate set (Clifford+T versus the Toffoli-only NCT set) affect which cost metric is reported, and which papers follow each convention?",
+      "expected_sources": [
+        "Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf",
+        "Optimized-quantum-implementation-of-AES.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "Papers using the Clifford+T gate set (e.g., the 2022 Science China paper, the Interlacing-Uncompute paper) report T-depth as the primary runtime metric, since T gates dominate fault-tolerant cost. Papers using the NCT gate set (Pauli-X, CNOT, Toffoli — e.g., Lin/Xiang 2023, and the SM4 paper) report Toffoli depth and the T·M value (Toffoli depth × qubits), because a Toffoli gate is the unit of cost in that model and can itself be decomposed into Clifford+T. The choice of gate set therefore determines whether T-depth or Toffoli-depth/T·M is the headline metric."
+    },
+    {
+      "query": "Both the 2023 Lin/Xiang AES paper and the 2024 SM4 paper use a depth-times-width product to evaluate their circuits. How is this metric defined in each paper, and what trade-off circuits do they report?",
+      "expected_sources": [
+        "Optimized-quantum-implementation-of-AES.pdf",
+        "Quantum-circuit-implementations-of-SM4-block-cipher-optimizing-the-number-of-qubits.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "In both papers the metric (called T·M in the AES paper and depth-times-width in the SM4 paper) is the product of the Toffoli depth and the number of qubits, capturing a depth/width trade-off. The AES paper reports minimum-qubit circuits of 269/333/397 qubits and, allowing more qubits, 474/538/602-qubit circuits that outperform prior art in T·M. The SM4 paper reports a 260-qubit minimum circuit and a 288-qubit parallel trade-off circuit with Toffoli depth 1716 and depth-times-width 494,208 (vs the previous best 825,792)."
+    },
+    {
+      "query": "Across the quantum-circuit papers on AES and SM4, what is the role of the S-box in determining the overall circuit cost, and what common algebraic technique is used to build an efficient S-box circuit in both the AES record paper and the SM4 paper?",
+      "expected_sources": [
+        "New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf",
+        "Quantum-circuit-implementations-of-SM4-block-cipher-optimizing-the-number-of-qubits.pdf"
+      ],
+      "expected_chunk_ids": [],
+      "reference": "In all of these ciphers the S-box is the only source of T/Toffoli gates and is the dominant cost driver of the whole quantum circuit, so optimizing the S-box is the key to reducing qubits/depth. A common algebraic technique is to decompose the S-box via composite-field arithmetic: the GF(2^8) multiplicative inversion is mapped into a smaller subfield (GF((2^4)^2), with inversion in GF(2^4)), where a low-cost inversion circuit can be synthesized by an automated tool — LIGHTER-R in the AES record paper and DORCIS in the SM4 paper."
     }
   ]
 }

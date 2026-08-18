@@ -121,3 +121,10 @@ docs/设计
 
 # Superpowers SDD scratch (subagent-driven-development working files)
 .superpowers/
+# Eval corpus: paper PDFs stay out of git (option C — copyright); the
+# eval_docs README records the paper list for reproduction instead.
+tests/fixtures/eval_docs/*.pdf
+
+# One-off analysis scratch / other tools' session memory
+output.txt
+scripts/_pdf_text/

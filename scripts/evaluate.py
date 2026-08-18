@@ -71,6 +71,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip retrieval (evaluate with mock chunks for testing).",
     )
+    parser.add_argument(
+        "--output", "-o",
+        default=None,
+        help=(
+            "Also write the full JSON report to this file (UTF-8). Survives "
+            "console buffer truncation. Independent of the default append "
+            "(see --no-save)."
+        ),
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help=(
+            "Skip the default append to logs/eval_history.jsonl (the durable "
+            "record every run writes unless this flag is given)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -158,6 +175,37 @@ def main() -> int:
     except Exception as exc:
         print(f"❌ Evaluation failed: {exc}", file=sys.stderr)
         return 1
+
+    # Persist the report durably — the console buffer can truncate long
+    # reports (observed: a 23-query run lost its head), so every run appends
+    # to logs/eval_history.jsonl by default (same file the dashboard's
+    # evaluation panel reads). --output additionally writes a standalone
+    # file; --no-save disables the default append.
+    import time as _time
+
+    report_dict = report.to_dict()
+    if not args.no_save:
+        try:
+            history_path = Path("logs/eval_history.jsonl")
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            entry = {"timestamp": _time.strftime("%Y-%m-%d %H:%M:%S"), **report_dict}
+            with history_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            print(f"💾 Appended to: {history_path}", file=sys.stderr)
+        except OSError as exc:
+            print(f"⚠️  Failed to append eval history: {exc}", file=sys.stderr)
+
+    if args.output:
+        try:
+            out_path = Path(args.output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(
+                json.dumps(report_dict, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            print(f"💾 Report saved to: {out_path}", file=sys.stderr)
+        except OSError as exc:
+            print(f"⚠️  Failed to write report file: {exc}", file=sys.stderr)
 
     # Output results
     if args.json:

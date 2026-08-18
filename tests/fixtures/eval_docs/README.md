@@ -10,5 +10,9 @@
 |---|---|---|
 | `New-record-in-the-number-of-qubits-for-a-quantum-implementation-of-AES.pdf` | *New record in the number of qubits for a quantum implementation of AES* (2023) | Frontiers in Physics (OPEN ACCESS) |
 | `Novel-quantum-circuit-implementation-of-Advanced-Encryption-Standard-with-low-costs.pdf` | *Novel quantum circuit implementation of Advanced Encryption Standard with low costs* (2022) | Science China |
+| `Optimized-Quantum-Circuit-of-AES-with-Interlacing-Uncompute-Structure.pdf` | *Optimized Quantum Circuit of AES With Interlacing-Uncompute Structure* (2024) | IEEE Transactions on Computers |
+| `Optimized-quantum-implementation-of-AES.pdf` | *Optimized quantum implementation of AES* (2023) | Science China (Springer) |
+| `Optimizing-the-Depth-of-Quantum-Implementations-of-Linear-Layers.pdf` | *Optimizing the depth of quantum implementations of linear layers* (2024) | Springer (会议论文) |
+| `Quantum-circuit-implementations-of-SM4-block-cipher-optimizing-the-number-of-qubits.pdf` | *Quantum circuit implementations of SM4 block cipher optimizing the number of qubits* (2024) | Springer (OPEN ACCESS) |
 
 > 评估设计详见 [`docs/superpowers/specs/2026-08-13-retrieval-evaluation-design.md`](../../docs/superpowers/specs/2026-08-13-retrieval-evaluation-design.md)。
