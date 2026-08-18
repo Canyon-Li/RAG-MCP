@@ -29,6 +29,7 @@ class TestRagasEvaluatorInit:
         evaluator = RagasEvaluator()
         assert set(evaluator._metric_names) == {
             "context_precision",
+            "context_recall",
             "context_relevance",
         }
 
@@ -62,7 +63,7 @@ class TestRagasEvaluatorInit:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         evaluator = RagasEvaluator(settings=None, metrics=None)
-        assert len(evaluator._metric_names) == 2
+        assert len(evaluator._metric_names) == 3
 
 
 class TestRagasImportCheck:
@@ -246,15 +247,11 @@ class TestRagasOllamaJudge:
         # patch() can resolve the target without importing the real ragas.
         mock_llms_mod = MagicMock()
         mock_llms_mod.llm_factory = MagicMock(name="ragas_llm_factory_fn")
-        mock_emb_mod = MagicMock()
-        mock_emb_mod.OpenAIEmbeddings = MagicMock(name="OpenAIEmbeddings_cls")
 
         ragas_stubs = {
             "ragas": MagicMock(),
             "ragas.llms": mock_llms_mod,
             "ragas.llms.base": MagicMock(),
-            "ragas.embeddings": mock_emb_mod,
-            "ragas.embeddings.base": MagicMock(),
         }
 
         with patch.dict(_sys.modules, ragas_stubs, clear=False), \
@@ -271,7 +268,7 @@ class TestRagasOllamaJudge:
             evaluator = RagasEvaluator.__new__(RagasEvaluator)  # bypass __init__ (ragas import)
             evaluator.settings = settings
 
-            llm, embeddings = evaluator._build_wrappers()
+            llm = evaluator._build_wrappers()
 
             # AsyncOpenAI called with the ollama base_url (/v1 appended)
             call_kwargs = mock_openai.call_args.kwargs
@@ -291,7 +288,7 @@ class TestRagasMetricRouting:
         """SUPPORTED_METRICS should now be context_relevance + context_precision."""
         from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
         assert SUPPORTED_METRICS == {
-            "context_relevance", "context_precision",
+            "context_relevance", "context_precision", "context_recall",
         }
 
     def test_context_relevance_called(self) -> None:
@@ -310,7 +307,7 @@ class TestRagasMetricRouting:
         with patch(
             "ragas.metrics.collections.ContextRelevance"
         ) as mock_cr, patch.object(
-            evaluator, "_build_wrappers", return_value=(MagicMock(), MagicMock())
+            evaluator, "_build_wrappers", return_value=MagicMock()
         ):
             mock_cr.return_value = fake_metric
             scores = evaluator._run_ragas(
@@ -337,7 +334,7 @@ class TestRagasMetricRouting:
         with patch(
             "ragas.metrics.collections.ContextPrecision"
         ) as mock_cp, patch.object(
-            evaluator, "_build_wrappers", return_value=(MagicMock(), MagicMock())
+            evaluator, "_build_wrappers", return_value=MagicMock()
         ):
             mock_cp.return_value = fake_metric
             scores = evaluator._run_ragas(
@@ -363,7 +360,7 @@ class TestRagasMetricRouting:
         with patch(
             "ragas.metrics.collections.ContextPrecision"
         ) as mock_cp, patch.object(
-            evaluator, "_build_wrappers", return_value=(MagicMock(), MagicMock())
+            evaluator, "_build_wrappers", return_value=MagicMock()
         ):
             scores = evaluator._run_ragas(
                 query="q", contexts=["ctx"], reference=None,
@@ -398,3 +395,143 @@ class TestRagasMetricRouting:
             )
 
         assert metrics["context_relevance"] == 0.7
+
+
+class TestContextRecallMetric:
+    """Tests for the context_recall metric branch in _run_ragas."""
+
+    def test_supported_metrics_includes_context_recall(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
+
+        assert "context_recall" in SUPPORTED_METRICS
+
+    def test_init_accepts_context_recall_metric(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["context_recall"])
+        assert evaluator._metric_names == ["context_recall"]
+
+    def test_run_ragas_calls_context_recall_with_reference(self) -> None:
+        """context_recall branch invokes ContextRecall.score with
+        (user_input, retrieved_contexts, reference) and records the value."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["context_recall"])
+        mock_result = MagicMock()
+        mock_result.value = 0.75
+
+        with patch(
+            "src.observability.evaluation.ragas_evaluator.RagasEvaluator._build_wrappers",
+            return_value=MagicMock(),
+        ), patch(
+            "ragas.metrics.collections.ContextRecall"
+        ) as MockContextRecall:
+            MockContextRecall.return_value.score.return_value = mock_result
+            scores = evaluator._run_ragas(
+                query="What is LCU?",
+                contexts=["LCU-based approach with query complexity O(1/sqrt(eps))."],
+                reference="The paper uses LCU with complexity O(1/sqrt(eps)).",
+            )
+
+        assert scores["context_recall"] == 0.75
+        MockContextRecall.return_value.score.assert_called_once_with(
+            user_input="What is LCU?",
+            retrieved_contexts=["LCU-based approach with query complexity O(1/sqrt(eps))."],
+            reference="The paper uses LCU with complexity O(1/sqrt(eps)).",
+        )
+
+    def test_run_ragas_context_recall_without_reference_scores_zero(self) -> None:
+        """Missing reference → warning logged, score 0.0 (symmetric with precision)."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["context_recall"])
+
+        with patch(
+            "src.observability.evaluation.ragas_evaluator.RagasEvaluator._build_wrappers",
+            return_value=MagicMock(),
+        ), patch(
+            "ragas.metrics.collections.ContextRecall"
+        ) as MockContextRecall:
+            scores = evaluator._run_ragas(
+                query="What is LCU?", contexts=["some context"], reference=None,
+            )
+
+        assert scores["context_recall"] == 0.0
+        MockContextRecall.return_value.score.assert_not_called()
+
+
+class TestBuildWrappersDeepseekBranch:
+    """Tests for the deepseek judge branch in _build_wrappers."""
+
+    def test_deepseek_branch_builds_llm_with_env_key(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("RAGAS_JUDGE_MODEL", "deepseek-v4-flash")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+
+        # Bypass __init__ (which calls _import_ragas) and set a MagicMock
+        # settings so the `settings is None` guard passes.
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        # Mock llm_factory + AsyncOpenAI at their import sources
+        with patch("ragas.llms.llm_factory") as mock_factory, \
+             patch("openai.AsyncOpenAI") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
+            result = evaluator._build_wrappers()
+
+        mock_client_cls.assert_called_once()
+        _, kwargs = mock_client_cls.call_args
+        assert kwargs["api_key"] == "sk-test-123"
+        assert kwargs["base_url"] == "https://api.deepseek.com"
+        mock_factory.assert_called_once_with(
+            "deepseek-v4-flash", client=mock_client_cls.return_value,
+            max_tokens=8192,
+        )
+        # embeddings 清理后返回单值 llm
+        assert result is mock_factory.return_value
+
+    def test_deepseek_branch_missing_key_raises(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+            evaluator._build_wrappers()
+
+    def test_deepseek_branch_custom_base_url(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+        monkeypatch.setenv("RAGAS_JUDGE_BASE_URL", "https://api.deepseek.com/v1")
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        with patch("ragas.llms.llm_factory"), \
+             patch("openai.AsyncOpenAI") as mock_client_cls:
+            evaluator._build_wrappers()
+
+        _, kwargs = mock_client_cls.call_args
+        assert kwargs["base_url"] == "https://api.deepseek.com/v1"
+
+    def test_build_wrappers_returns_single_llm_not_tuple(self, monkeypatch) -> None:
+        """After embeddings cleanup, _build_wrappers returns the llm alone."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+        with patch("ragas.llms.llm_factory") as mock_factory, \
+             patch("openai.AsyncOpenAI"):
+            result = evaluator._build_wrappers()
+
+        assert result is mock_factory.return_value

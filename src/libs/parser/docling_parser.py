@@ -81,6 +81,13 @@ class DoclingParser(BaseParser):
     # as PICTURE. 50pt ≈ 1.76 cm — low enough to keep small paper figures (a
     # 99pt-tall circuit diagram is real), high enough to drop true micro-noise.
     MIN_FIGURE_SIZE = 50
+    # Page-batched conversion (16 GB RAM workaround). docling's preprocess
+    # stage fails with std::bad_alloc after ~9 pages per DocumentConverter
+    # (ONNX/arena memory accumulates per converter and is never returned),
+    # silently skipping every page past the threshold. A FRESH converter per
+    # batch resets that accumulation. 8 < 9 keeps every batch under the
+    # observed failure threshold with a one-page safety margin.
+    DEFAULT_PAGE_BATCH_SIZE = 8
 
     def __init__(
         self,
@@ -88,6 +95,7 @@ class DoclingParser(BaseParser):
         collection: str = "default",
         image_storage_dir: str | Path = "data/images",
         extract_images: bool = True,
+        page_batch_size: int | None = None,
         **kwargs: Any,
     ):
         """Initialize DoclingParser.
@@ -97,6 +105,9 @@ class DoclingParser(BaseParser):
             collection: Collection name scoping the image storage directory.
             image_storage_dir: Base dir for extracted images (Factory-resolved).
             extract_images: Whether to extract embedded images via PyMuPDF.
+            page_batch_size: Pages per docling conversion batch. None →
+                DEFAULT_PAGE_BATCH_SIZE (8). 1 disables batching value but not
+                the code path; values <= 0 mean "never batch" (single convert).
 
         Raises:
             ImportError: If docling is not installed.
@@ -110,6 +121,11 @@ class DoclingParser(BaseParser):
         self.collection = collection
         self.extract_images = extract_images
         self.image_storage_dir = Path(image_storage_dir)
+        self.page_batch_size = (
+            page_batch_size
+            if page_batch_size is not None
+            else self.DEFAULT_PAGE_BATCH_SIZE
+        )
         # Composition: pdf_text for fallback (degradation chain §7.7).
         self._pdf_text = PdfTextParser(
             settings=settings,
@@ -248,17 +264,19 @@ class DoclingParser(BaseParser):
     def _extract_with_docling(
         self, path: Path, doc_hash: str
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Extract typed sections and figures via Docling.
+        """Extract typed sections and figures via Docling, in page batches.
+
+        Long PDFs are converted page-batch by page-batch, each batch with a
+        FRESH DocumentConverter. Docling's preprocess accumulates native
+        memory per converter and dies with std::bad_alloc after ~9 pages
+        (observed on 16 GB machines), silently skipping the rest — a fresh
+        converter per batch resets the accumulation. See DEFAULT_PAGE_BATCH_SIZE.
 
         Figures are rendered from each Docling Figure item's bbox via PyMuPDF
         (``get_pixmap(clip=bbox)``) — this captures both raster and vector
         graphics in one pass, replacing the old ``get_images()`` raster-only
         extraction.
         """
-        converter = self._build_converter()
-        result = converter.convert(str(path))
-        ddoc = result.document
-
         sections: List[Dict[str, Any]] = []
         images: List[Dict[str, Any]] = []
 
@@ -268,31 +286,86 @@ class DoclingParser(BaseParser):
         )
         fig_counter = 0
         try:
-            for item, _level in ddoc.iterate_items():
-                if fitz_doc is not None and self._is_figure_item(item):
-                    rendered = self._render_figure_region(
-                        fitz_doc, item, doc_hash, fig_counter
+            for s, e in self._page_batches(path):
+                converter = self._build_converter()
+                try:
+                    result = (
+                        converter.convert(str(path), page_range=(s, e))
+                        if e is not None
+                        else converter.convert(str(path))
                     )
-                    if rendered is not None:
-                        fig_counter += 1
-                        images.append(rendered)
-                        sections.append({
-                            "type": "figure",
-                            "text": f"[IMAGE: {rendered['id']}]",
-                            "page": rendered["page"],
-                            "bbox": None,
-                            "images": [rendered],
-                            "html": None,
-                        })
-                        continue
-                sec = self._item_to_section(item, ddoc)
-                if sec:
-                    sections.append(sec)
+                except Exception as exc:
+                    # Batch-level failure (e.g. bad_alloc deeper than the
+                    # threshold): keep sections already extracted from earlier
+                    # batches rather than losing the whole document. If ALL
+                    # batches fail, sections stays empty and parse() falls
+                    # back to pdf_text as before.
+                    logger.warning(
+                        f"docling batch pages {s}-{e or 'end'} failed for "
+                        f"{path.name}: {exc}"
+                    )
+                    continue
+                ddoc = result.document
+                for item, _level in ddoc.iterate_items():
+                    if fitz_doc is not None and self._is_figure_item(item):
+                        rendered = self._render_figure_region(
+                            fitz_doc, item, doc_hash, fig_counter
+                        )
+                        if rendered is not None:
+                            fig_counter += 1
+                            images.append(rendered)
+                            sections.append({
+                                "type": "figure",
+                                "text": f"[IMAGE: {rendered['id']}]",
+                                "page": rendered["page"],
+                                "bbox": None,
+                                "images": [rendered],
+                                "html": None,
+                            })
+                            continue
+                    sec = self._item_to_section(item, ddoc)
+                    if sec:
+                        sections.append(sec)
         finally:
             if fitz_doc is not None:
                 fitz_doc.close()
 
         return sections, images
+
+    def _page_count(self, path: Path) -> Optional[int]:
+        """Total page count of the PDF, or None when it can't be read.
+
+        Respects PYMUPDF_AVAILABLE (tests patch it False) and swallows fitz
+        errors — an unreadable page count must never fail the parse, it just
+        disables batching for that file.
+        """
+        if not PYMUPDF_AVAILABLE:
+            return None
+        try:
+            with fitz.open(path) as d:
+                n = d.page_count
+                # fitz returns int; anything else (a mocked fitz in tests, a
+                # weird PDF) just disables batching rather than crashing.
+                return n if isinstance(n, int) else None
+        except Exception as e:
+            logger.warning(f"Could not read page count of {path}: {e}")
+            return None
+
+    def _page_batches(self, path: Path) -> List[Tuple[int, Optional[int]]]:
+        """Yield (start, end) 1-based inclusive page ranges to convert.
+
+        Returns [(1, None)] (a single unrestricted convert — the original
+        behaviour) when batching doesn't apply: page count unknown, batch
+        size <= 0, or the document fits in one batch.
+        """
+        n = self._page_count(path)
+        size = self.page_batch_size
+        if n is None or size is None or size <= 0 or n <= size:
+            return [(1, None)]
+        return [
+            (start, min(start + size - 1, n))
+            for start in range(1, n + 1, size)
+        ]
 
     def _build_converter(self) -> Any:
         """Build the DocumentConverter (default: StandardPdfPipeline).
