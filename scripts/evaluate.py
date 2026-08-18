@@ -93,6 +93,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     """Main entry point."""
+    # Load .env (gitignored) before anything reads env vars — judge keys
+    # (DEEPSEEK_API_KEY / RAGAS_JUDGE_*) live there. Missing file is a silent
+    # no-op; already-set session vars win over .env values (override=False).
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     args = parse_args()
 
     try:

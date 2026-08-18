@@ -40,6 +40,7 @@ dependencies = [
     "httpx>=0.24.0",  # DeepSeekLLM and OpenAI-compatible HTTP clients
     "requests>=2.28.0",  # AzureVisionLLM REST call (azure_vision_llm.py)
     "PyMuPDF>=1.23.0",  # import as fitz — PdfTextParser / PdfTableParser
+    "python-dotenv>=1.0",  # evaluate.py .env loading (DEEPSEEK_API_KEY etc.)
 ]
 
 [project.optional-dependencies]

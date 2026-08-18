@@ -3,6 +3,7 @@
 This evaluator wraps the Ragas framework to compute LLM-as-Judge metrics:
 - Context Relevance: Are the retrieved contexts relevant to the query?
 - Context Precision: Are the retrieved chunks relevant and well-ordered?
+- Context Recall: Does the reference answer appear in retrieved contexts?
 
 Design Principles:
 - Pluggable: Implements BaseEvaluator interface, swappable via factory.
@@ -223,8 +224,8 @@ class RagasEvaluator(BaseEvaluator):
             ContextRecall,
         )
 
-        # Build LLM / Embedding wrappers from settings (ollama judge by default)
-        llm, embeddings = self._build_wrappers()
+        # Build the judge LLM wrapper from env-driven provider config
+        llm = self._build_wrappers()
 
         scores: Dict[str, float] = {}
 
@@ -289,18 +290,19 @@ class RagasEvaluator(BaseEvaluator):
             return str(ref) if ref else None
         return None
 
-    def _build_wrappers(self) -> tuple:
-        """Build Ragas LLM and Embedding wrappers from project settings.
+    def _build_wrappers(self) -> Any:
+        """Build the Ragas judge LLM wrapper.
 
-        Uses Ragas 0.4+ native API (InstructorLLM + OpenAIEmbeddings)
-        instead of deprecated LangchainLLMWrapper.
+        Judge provider is env-driven (RAGAS_JUDGE_PROVIDER: ollama | deepseek
+        | azure | openai), decoupled from settings.llm so swapping the
+        retrieval LLM never affects the judge.
 
-        Returns:
-            Tuple of (llm_wrapper, embeddings_wrapper).
+        The three active metrics (relevance / precision / recall) consume no
+        embeddings — the historical embeddings wrapper was dead code and has
+        been removed (spec 2026-08-16 §2).
         """
         from openai import AsyncAzureOpenAI, AsyncOpenAI
         from ragas.llms import llm_factory
-        from ragas.embeddings import OpenAIEmbeddings
 
         if self.settings is None:
             raise ValueError("Settings required to create LLM for Ragas evaluation")
@@ -317,12 +319,28 @@ class RagasEvaluator(BaseEvaluator):
                 base_url=base_url, api_key="ollama", http_client=http_client,
             )
             llm = llm_factory(self._resolve_judge_model(), client=client, max_tokens=8192)
-            # Ollama embeddings — reuse same endpoint.
-            # nomic-embed-text is the project's embedding model.
-            embeddings = OpenAIEmbeddings(
-                model="nomic-embed-text", client=client,
+            return llm
+
+        if judge_provider == "deepseek":
+            # Cloud judge via DeepSeek's OpenAI-compatible endpoint.
+            # NOTE: unlike the ollama branch, trust_env is deliberately NOT
+            # disabled here — deepseek is a REMOTE endpoint, so going through
+            # the system proxy is the correct path (D-014 only applies to
+            # localhost traffic).
+            api_key = os.environ.get("DEEPSEEK_API_KEY")
+            if not api_key:
+                raise ValueError(
+                    "RAGAS_JUDGE_PROVIDER=deepseek but DEEPSEEK_API_KEY "
+                    "is not set"
+                )
+            base_url = os.environ.get(
+                "RAGAS_JUDGE_BASE_URL", "https://api.deepseek.com"
             )
-            return llm, embeddings
+            client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+            llm = llm_factory(
+                self._resolve_judge_model(), client=client, max_tokens=8192,
+            )
+            return llm
 
         # Fallback: original cloud-judge logic (azure/openai) below
 
@@ -354,34 +372,7 @@ class RagasEvaluator(BaseEvaluator):
 
         llm = llm_factory(llm_cfg.model, client=llm_client, max_tokens=8192)
 
-        # ── Embeddings ──
-        emb_cfg = self.settings.embedding
-        emb_provider = emb_cfg.provider.lower()
-        emb_azure_endpoint = getattr(emb_cfg, "azure_endpoint", None)
-
-        # Same Azure-compatible mode detection for embeddings
-        use_azure_emb = (
-            emb_provider == "azure"
-            or (emb_provider == "openai" and emb_azure_endpoint)
-        )
-
-        if use_azure_emb:
-            emb_client = AsyncAzureOpenAI(
-                api_key=emb_cfg.api_key,
-                azure_endpoint=emb_azure_endpoint or emb_cfg.azure_endpoint,
-                api_version=getattr(emb_cfg, "api_version", None) or "2024-02-15-preview",
-            )
-        elif emb_provider == "openai":
-            emb_client = AsyncOpenAI(api_key=emb_cfg.api_key)
-        else:
-            raise ValueError(
-                f"Unsupported embedding provider for Ragas: '{emb_provider}'. "
-                "Supported: azure, openai"
-            )
-
-        embeddings = OpenAIEmbeddings(model=emb_cfg.model, client=emb_client)
-
-        return llm, embeddings
+        return llm
 
     def _extract_texts(self, chunks: List[Any]) -> List[str]:
         """Extract text strings from various chunk representations.
