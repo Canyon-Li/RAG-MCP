@@ -42,6 +42,7 @@
 | D-025 | 2026-08-13 | 英文 BM25 分词改造：公共 tokenizer + 零依赖 Porter stemmer（索引/查询单一真相源） | 采纳 | PR #7 |
 | D-026 | 2026-08-13 | chunk_refiner 关闭 LLM 精炼层（策略 C：溯源优先确定性，规则层恒执行） | 采纳 | PR #7 |
 | D-027 | 2026-08-14 | DoclingParser 分批转换（每批新 converter，默认批 8）修长文档 std::bad_alloc 静默缺页 | 采纳 | feat/eval-speedup |
+| D-028 | 2026-08-17 | 评估体系 v2：新增 context_recall + judge 切 DeepSeek（env 驱动 + dotenv）；五指标全量基线落地 | 采纳 | feat/eval-speedup |
 
 ---
 
@@ -105,6 +106,16 @@
 - **代价 / 现状**：① 批边界可能截断跨页元素（跨页表格会被拆两半，本批语料论文表格基本页内，接受）；② 短文档多一次 fitz 打开读页数（微秒级，`_page_count` 失败时静默退回单批不炸）；③ caption/embedding 阶段不变。18/18 单测绿（4 个新测试：分批调用/每批新 converter/部分失败保留/批大小可配）；全库 1352 passed，10 个失败均为 main 预存（stash 对照验证）。
 - **关联**：[docling_parser.py](src/libs/parser/docling_parser.py)（`DEFAULT_PAGE_BATCH_SIZE`/`_page_batches`/`_page_count`）；[test_docling_parser.py](tests/unit/test_docling_parser.py)；降级链见 [[D-011]]。分支 `feat/eval-speedup`。
 
+### D-028 评估体系 v2：新增 context_recall + judge 切 DeepSeek（env 驱动 + dotenv）
+- **状态**：采纳。
+- **背景**：v1 四指标（source_recall/precision@k + context_relevance/precision）中三个以检索结果自身为分母，**对漏检结构性失明**——人为构造单源检索（`source:` 内联过滤挤掉第二篇论文）的对照实验实证：source_recall 纹丝不动（1.0→1.0）、source_precision 反而升高（0.8→1.0，指标在奖励退化），漏检只有 context_recall 能量到（1.0→0.25）。chunk 级传统做法（标注 chunk_id 清单）被 D-027 实锤否决——同文件同参数仅换转换路径，全库 chunk 404→576、id 全变，GT 随被测对象一部分（切分方式）漂移不可接受。judge 从本地 llama3（~10s+/条/指标）切 DeepSeek 的前置：评估内容已脱敏（公开可查询的论文），数据出境边界经确认接受。
+- **备选**：① 仅 recall 用 deepseek（judge 混部，方差来源不唯一，否决）；② chunk_id 级确定性 recall（GT 脆弱，否决，见上）；③ GT 存 chunk 原文做确定性文本匹配（chunk_refiner 规则层恒执行 + docling 布局重建导致 chunk 文本 ≠ PDF 原文，精确匹配大量假阴性；模糊匹配让评估器本身变成需调优系统，否决）。完整对比论证见 [docs/eval-metrics-upgrade-v2.md](docs/eval-metrics-upgrade-v2.md) §3。
+- **决策**：分两件事一个交付。**其一**：`RagasEvaluator` 新增 `context_recall`（RAGAS 0.4.3 `ContextRecall.score(user_input, retrieved_contexts, reference)`，GT 复用 golden set 既有 `reference` 字段，零结构变更）；reference 缺失 → warning + 0.0（与 precision 对称）。**其二**：judge 通道 `_build_wrappers()` 新增 `deepseek` 分支——全部三个语义指标统一走 `deepseek-v4-flash`，env 驱动（`RAGAS_JUDGE_PROVIDER=deepseek` + `DEEPSEEK_API_KEY`，base_url 可 `RAGAS_JUDGE_BASE_URL` 覆盖）；evaluate.py 启动时 `load_dotenv()`（override=False，会话 env 优先）；ollama 分支保留（默认 provider 不变，本地零成本路径仍在）；embeddings 死代码删除（三指标均不消费）。
+- **理由**：context_recall 提供 v1 缺失的外部分母（reference 论断数），judge 把 reference 拆原子论断逐条判"检索上下文能否支撑"——对 chunk_refiner/docling 的表面文本变形不敏感，且 GT 免疫重切分（reference 是切分的输入而非产物）。judge 全量切 deepseek 而非混部：三个语义指标共享同一 judge 才能横向比较；云端 ~1-3s/指标/条 vs llama3 本地 10s+。deepseek 分支 trust_env **不禁用**（与 D-014 ollama localhost 规则相反且各自正确：云端出网走系统代理是正路）。
+- **代价 / 现状**：分支 `feat/eval-speedup`（commits d531dee→aa8e66c，5 个任务全部 review Approved）。单测 32 个全绿（context_recall 4 + deepseek 分支 4 + dotenv 顺序守护 1 + 收窄回归）。**E2E 验收**：23 条 v4.0 GT（人工重标，reference 严格论断式）五指标全量跑通，基线 source_recall 0.9565 / source_precision 0.7130 / context_relevance 0.8696 / context_precision 0.6557 / context_recall 0.4942——**召回缺口（0.49）与排序噪音（0.66）并存**，B 阶段调参优先级已定（[docs/eval-v2-baseline-report.md](docs/eval-v2-baseline-report.md) §5）。**运行坑（两次死锁排查换来的）**：① deepseek 连续百+请求触发服务端限流/连接重置（CPU 0 增长、ConnectTimeout）→ 分批 2 条/批 + 15s 间隔后 12/12 批零失败；② 系统代理间歇拦截海外建连（与 D-014 同根因反方向）→ judge 走 deepseek 时避免开代理；③ DeepSeek JSON mode 要求 prompt 含 "json" 字样 + 样例，偶发空返回是文档化行为（ragas instructor 自带合规 prompt，勿误判模型坏）。
+- **遗留**：逐条明细文件未持久化（aggregate 已存档 logs/eval_v2_baseline_deepseek.json）；"目标 chunk 有无进 top-5" 仍无指标（anchor_hit@5 可作 v3，锚文本 GT 与 source 指标同构）。D-017 的 ragas 半成品状态就此解除（框架已完整测试 + 真实基线落地）。
+- **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[evaluate.py](scripts/evaluate.py)（dotenv）；spec [2026-08-16-context-recall-deepseek-judge-design.md](docs/superpowers/specs/2026-08-16-context-recall-deepseek-judge-design.md)；基线 [eval-v2-baseline-report.md](docs/eval-v2-baseline-report.md)。与 [[D-014]]（trust_env 方向性）、[[D-027]]（chunk_id 脆弱性证据）、[[D-017]]（解除待决）关联。
+
 ---
 
 ## C. Provider / 运行时选型
@@ -154,9 +165,9 @@
 ## D. 待决与已知债
 
 ### D-017 evaluator / cross_encoder 未完整测试
-- **状态**：待决。
+- **状态**：待决 → **ragas 部分已由 D-028 解除**（框架完整测试 + 真实基线落地）；cross_encoder 仍待决。
 - **现状**：`BaseEvaluator` + `EvaluatorFactory` + `custom_evaluator` / `ragas_evaluator` / `composite_evaluator` 框架已搭好，golden test set 也存在；但 `evaluation.enabled: false`，且 README 自述"未经过完整测试"。`cross_encoder_reranker` 同样是框架未测、默认关闭。
-- **下一步建议**：见体检报告 P0——先打开 eval 用 golden set 跑通 hit_rate/mrr 基线，把这条从"待决"推进到"采纳"。
+- **下一步建议**：ragas 侧见 D-028；cross_encoder 侧仍按体检报告建议——补完测试后再考虑启用。
 
 ### D-018 图片结构化数据从 Chroma metadata 彻底解耦到 ImageStorage SQLite
 - **状态**：采纳。
