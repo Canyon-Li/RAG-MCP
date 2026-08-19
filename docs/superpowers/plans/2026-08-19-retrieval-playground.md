@@ -343,24 +343,31 @@ class TestRetrievalService:
         svc.search("q", top_k=7, collection="papers")
         h.search.assert_called_once_with(query="q", top_k=7, return_details=True)
 
-    @patch("src.observability.dashboard.services.retrieval_service.chromadb")
-    def test_list_collections(self, mock_chroma: MagicMock) -> None:
+    def test_list_collections(self) -> None:
         from src.observability.dashboard.services.retrieval_service import RetrievalService
 
+        # NOTE: 实现里 chromadb 是局部 import(模块级无属性可 patch)——必须用
+        # patch.dict("sys.modules", ...) 注入 mock,repo 惯例同 test_get_document_summary.py:557。
         col = MagicMock()
         col.name = "papers"
-        client = mock_chroma.PersistentClient.return_value
-        client.list_collections.return_value = [col]
-        svc = RetrievalService()
-        assert svc.list_collections() == ["papers"]
+        mock_chroma = MagicMock()
+        mock_chroma.PersistentClient.return_value.list_collections.return_value = [col]
+        with patch.dict(
+            "sys.modules",
+            {"chromadb": mock_chroma, "chromadb.config": MagicMock()},
+        ):
+            svc = RetrievalService()
+            assert svc.list_collections() == ["papers"]
 
     def test_list_collections_failure_returns_empty(self) -> None:
         from src.observability.dashboard.services.retrieval_service import RetrievalService
 
         svc = RetrievalService()
         # chromadb 未初始化/目录缺失 → 空列表而非异常
-        with patch("src.observability.dashboard.services.retrieval_service.chromadb",
-                   side_effect=Exception("boom")):
+        with patch.dict(
+            "sys.modules",
+            {"chromadb": MagicMock(side_effect=Exception("boom")), "chromadb.config": MagicMock()},
+        ):
             assert svc.list_collections() == []
 ```
 
