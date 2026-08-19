@@ -24,9 +24,8 @@ def render() -> None:
     """Render the Retrieval Playground page."""
     st.header("🔬 Retrieval Playground")
     st.markdown(
-        "输入一条查询,立即查看 **Dense / Sparse / RRF Fusion** 三路检索结果对比。"
-        "🟢 = 两路都召回(交集),⚪ = 仅单路召回——一眼看出 RRF 是否救回了某路漏掉的 chunk。"
-        "不做 LLM 生成,专注检索效果检视。"
+        "输入一条查询,立即查看 **Dense / Sparse** 两路检索结果及 **RRF 融合** 结果。"
+        "🟢 = 两路都召回(交集),⚪ = 仅单路召回。"
     )
 
     svc = RetrievalService()

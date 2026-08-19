@@ -101,7 +101,7 @@ def render() -> None:
         st.info("该报告没有 batches 明细(旧格式或空跑)。")
     else:
         df = pd.DataFrame(
-            [{**{f"Batch {i + 1}": i + 1}, **b} for i, b in enumerate(snap.batches)]
+            [{"Batch": i + 1, **b} for i, b in enumerate(snap.batches)]
         )
         df = df.rename(columns={s.key: s.label for s in METRIC_SPECS})
         st.dataframe(df, use_container_width=True, hide_index=True)
