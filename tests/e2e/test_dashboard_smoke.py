@@ -252,3 +252,31 @@ class TestDashboardSmoke:
         )
         text = _collect_text(at)
         assert "evaluation" in text.lower() or "panel" in text.lower()
+
+    # ------------------------------------------------------------------
+    # 7. Retrieval Playground page
+    # ------------------------------------------------------------------
+
+    @pytest.mark.e2e
+    def test_retrieval_playground_page_renders(self) -> None:
+        """Playground renders with mocked service (empty result is OK)."""
+        from streamlit.testing.v1 import AppTest
+
+        mock_svc = MagicMock()
+        mock_svc.list_collections.return_value = ["papers"]
+
+        def page_script():
+            from src.observability.dashboard.pages.retrieval_playground import render
+            render()
+
+        at = AppTest.from_function(page_script, default_timeout=10)
+
+        with patch(
+            "src.observability.dashboard.pages.retrieval_playground.RetrievalService",
+            return_value=mock_svc,
+        ):
+            at.run()
+
+        assert not at.exception, f"Playground raised: {at.exception}"
+        text = _collect_text(at)
+        assert "playground" in text.lower() or "retrieval" in text.lower()

@@ -24,6 +24,11 @@ def _page_data_browser() -> None:
     render()
 
 
+def _page_retrieval_playground() -> None:
+    from src.observability.dashboard.pages.retrieval_playground import render
+    render()
+
+
 def _page_ingestion_manager() -> None:
     from src.observability.dashboard.pages.ingestion_manager import render
     render()
@@ -49,6 +54,7 @@ def _page_evaluation_panel() -> None:
 pages = [
     st.Page(_page_overview, title="Overview", icon="📊", default=True),
     st.Page(_page_data_browser, title="Data Browser", icon="🔍"),
+    st.Page(_page_retrieval_playground, title="Retrieval Playground", icon="🔬"),
     st.Page(_page_ingestion_manager, title="Ingestion Manager", icon="📥"),
     st.Page(_page_ingestion_traces, title="Ingestion Traces", icon="🔬"),
     st.Page(_page_query_traces, title="Query Traces", icon="🔎"),
