@@ -134,7 +134,10 @@ MCP Server 通过 stdio + JSON-RPC 通信。在 MCP 客户端配置中添加以�
 
 连接建立后，Agent 可使用以下工具：`query_knowledge_hub`、`list_collections`、`get_document_summary`，以及一组文档生命周期管理接口（增删查、跨存储清理）。
 
-> **Dashboard 预览**：项目内置一个 6 页的 Streamlit 管理界面，支持查看 Trace、管理集合、执行评估回归。运行 `python scripts/start_dashboard.py` 后访问 `http://localhost:8501` 即可使用。
+> **Dashboard 预览**：项目内置一个 7 页的 Streamlit 管理界面，支持查看 Trace、管理集合、执行评估回归。运行 `python scripts/start_dashboard.py` 后访问 `http://localhost:8501` 即可使用。
+>
+> - **Retrieval Playground** — 当场查询并三路对比 Dense / Sparse / RRF 结果（交集高亮），检索效果检视工作台
+> - **Evaluation Panel** — v2 五指标报告只读视图（兼容 v1 旧报告）
 
 ---
 
