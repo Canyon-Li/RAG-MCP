@@ -237,15 +237,23 @@ class TestDashboardSmoke:
 
     @pytest.mark.e2e
     def test_evaluation_panel_page_renders(self) -> None:
-        """Evaluation Panel page loads without errors."""
+        """Evaluation Panel loads (no-report guidance is OK)."""
         from streamlit.testing.v1 import AppTest
+
+        mock_svc = MagicMock()
+        mock_svc.list_runs.return_value = []
 
         def page_script():
             from src.observability.dashboard.pages.evaluation_panel import render
             render()
 
         at = AppTest.from_function(page_script, default_timeout=10)
-        at.run()
+
+        with patch(
+            "src.observability.dashboard.pages.evaluation_panel.EvaluationReportService",
+            return_value=mock_svc,
+        ):
+            at.run()
 
         assert not at.exception, (
             f"Evaluation Panel page raised an exception: {at.exception}"
