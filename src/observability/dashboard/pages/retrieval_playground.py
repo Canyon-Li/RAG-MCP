@@ -88,7 +88,7 @@ def render() -> None:
 
     # ── Status strip ──────────────────────────────────────────────────
     if result.used_fallback:
-        st.warning(f"⚠️ 单路降级运行(used_fallback=True)。")
+        st.warning("⚠️ 单路降级运行(used_fallback=True)。")
     if result.dense_error:
         st.error(f"Dense 路错误: {result.dense_error}")
     if result.sparse_error:

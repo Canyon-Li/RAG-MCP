@@ -15,7 +15,7 @@ Layout:
 from __future__ import annotations
 
 import logging
-from typing import Any, List
+from typing import List
 
 import pandas as pd
 import streamlit as st
@@ -131,7 +131,7 @@ def _render_history(svc: EvaluationReportService) -> None:
         st.info("没有历史记录(`logs/eval_history.jsonl` 为空或不存在)。")
         return
 
-    options = [snap.label for snap in entries]
+    options = [snap.label for snap in reversed(entries)]
     chosen = st.multiselect(
         "选择要对比的运行(按时间倒序)",
         options=options,
@@ -143,9 +143,9 @@ def _render_history(svc: EvaluationReportService) -> None:
 
     chosen_set = set(chosen)
     rows = []
-    for snap in reversed(entries):        # 时间正序展示
+    for snap in reversed(entries):        # 倒序展示(最新在前)
         if snap.label in chosen_set:
-            rows.append({"run": snap.label, **snap.aggregate})
+            rows.append({"时间": snap.label, **snap.aggregate})
     if not rows:
         return
     df = pd.DataFrame(rows).rename(columns={s.key: s.label for s in METRIC_SPECS})

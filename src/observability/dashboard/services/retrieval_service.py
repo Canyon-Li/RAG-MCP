@@ -29,7 +29,7 @@ class PlaygroundResult:
         used_fallback: whether one path failed and the other was used raw.
         keywords: tokenizer output from ProcessedQuery (index-side aligned).
         intersection: chunk_ids present in BOTH dense and sparse results.
-        timings: elapsed ms per stage (dense / sparse / fusion / total).
+        timings: 各阶段耗时毫秒。当前仅填充 "total"(含 HybridSearch 冷启动装配耗时);后续接 TraceContext 纯计时时再补 dense/sparse/fusion 分段。
     """
 
     fused: List[Dict[str, Any]] = field(default_factory=list)

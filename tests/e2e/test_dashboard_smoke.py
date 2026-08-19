@@ -74,7 +74,7 @@ def _mock_settings() -> MagicMock:
 def _collect_text(at: Any) -> str:
     """Collect all rendered text from an AppTest run for assertion."""
     parts: List[str] = []
-    for attr in ("markdown", "header", "subheader", "info", "error", "title", "text", "success", "warning"):
+    for attr in ("markdown", "header", "subheader", "info", "error", "title", "text", "success", "warning", "caption", "metric"):
         for el in getattr(at, attr, []):
             parts.append(str(getattr(el, "value", "")))
     return "\n".join(parts)
@@ -288,3 +288,49 @@ class TestDashboardSmoke:
         assert not at.exception, f"Playground raised: {at.exception}"
         text = _collect_text(at)
         assert "playground" in text.lower() or "retrieval" in text.lower()
+
+    @pytest.mark.e2e
+    def test_retrieval_playground_search_renders_columns(self) -> None:
+        """Post-click: a mocked search renders three columns + metrics, no exception."""
+        from streamlit.testing.v1 import AppTest
+
+        from src.observability.dashboard.services.retrieval_service import PlaygroundResult
+
+        def _chunk(cid: str, score: float, src: str = "a.pdf") -> dict:
+            return {"chunk_id": cid, "score": score, "text": f"text-{cid}",
+                    "source": src, "title": f"T-{cid}"}
+
+        mock_svc = MagicMock()
+        mock_svc.list_collections.return_value = ["papers"]
+        mock_svc.search.return_value = PlaygroundResult(
+            fused=[_chunk("f1", 0.9), _chunk("d1", 0.8)],
+            dense=[_chunk("d1", 0.8), _chunk("both", 0.7)],
+            sparse=[_chunk("both", 0.7), _chunk("s1", 0.6)],
+            dense_error=None,
+            sparse_error=None,
+            used_fallback=False,
+            keywords=["quantum", "aes"],
+            intersection={"both"},
+            timings={"total": 12.5},
+        )
+
+        def page_script():
+            from src.observability.dashboard.pages.retrieval_playground import render
+            render()
+
+        at = AppTest.from_function(page_script, default_timeout=10)
+        with patch(
+            "src.observability.dashboard.pages.retrieval_playground.RetrievalService",
+            return_value=mock_svc,
+        ):
+            at.run()
+            at.text_input[0].set_value("quantum AES")
+            at.button[0].click().run()
+
+        assert not at.exception, f"Playground post-click raised: {at.exception}"
+        text = _collect_text(at)
+        # 三列标题 + 交集高亮 + 指标都渲染了
+        assert "dense" in text.lower() or "Dense" in text
+        assert "fusion" in text.lower() or "Fusion" in text
+        assert "12.5" in text or "12" in text          # timings metric
+        assert "quantum" in text                        # keywords caption

@@ -98,7 +98,7 @@ class EvaluationReportService:
             label=f"{data.get('run', run_id)} · {data.get('date', '')}",
             date=str(data.get("date", "")),
             n_qa=data.get("n_qa"),
-            batches=[_fill_metrics(b) for b in data.get("batches", [])],
+            batches=[_fill_metrics(b) for b in data.get("batches") or []],
             aggregate=_fill_metrics(data.get("weighted_aggregate")),
         )
 
@@ -122,7 +122,7 @@ class EvaluationReportService:
                 label=str(data.get("timestamp", "history")),
                 date=str(data.get("timestamp", ""))[:10],
                 n_qa=data.get("query_count"),
-                batches=[_fill_metrics(qr.get("metrics")) for qr in data.get("query_results", [])],
+                batches=[_fill_metrics(qr.get("metrics")) for qr in data.get("query_results") or []],
                 aggregate=_fill_metrics(data.get("aggregate_metrics")),
             ))
         return snapshots

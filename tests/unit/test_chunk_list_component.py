@@ -61,8 +61,12 @@ class TestRenderChunkList:
         assert any("⚪" in t for t in titles), f"miss chunk 应有 ⚪ 前缀: {titles}"
 
     def test_highlight_none_keeps_score_colours(self) -> None:
-        at = self._run([_chunk("c1", 0.9), _chunk("c2", 0.1)], highlight=None)
+        at = self._run(
+            [_chunk("c1", 0.9), _chunk("c2", 0.1), _chunk("c3", 0.6)],
+            highlight=None,
+        )
         assert not at.exception
         titles = self._expander_titles(at)
         assert any("🟢" in t for t in titles)   # score>=0.8
+        assert any("🟡" in t for t in titles)   # 0.5<=score<0.8
         assert any("🔴" in t for t in titles)   # score<0.5
