@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 
 import streamlit as st
 
+from src.observability.dashboard.components.chunk_list import render_chunk_list
 from src.observability.dashboard.services.trace_service import TraceService
 
 logger = logging.getLogger(__name__)
@@ -508,7 +509,7 @@ def _render_retrieval_stage(data: Dict[str, Any], label: str, *, trace_idx: int 
 
     chunks = data.get("chunks", [])
     if chunks:
-        _render_chunk_list(chunks, prefix=f"{label.lower().replace(' ', '_')}_chunk_{trace_idx}")
+        render_chunk_list(chunks, prefix=f"{label.lower().replace(' ', '_')}_chunk_{trace_idx}")
     else:
         st.info(f"No {label.lower()} results returned.")
 
@@ -527,7 +528,7 @@ def _render_fusion_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
 
     chunks = data.get("chunks", [])
     if chunks:
-        _render_chunk_list(chunks, prefix=f"fusion_chunk_{trace_idx}")
+        render_chunk_list(chunks, prefix=f"fusion_chunk_{trace_idx}")
     else:
         st.info("No fusion results.")
 
@@ -546,50 +547,9 @@ def _render_rerank_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
 
     chunks = data.get("chunks", [])
     if chunks:
-        _render_chunk_list(chunks, prefix=f"rerank_chunk_{trace_idx}")
+        render_chunk_list(chunks, prefix=f"rerank_chunk_{trace_idx}")
     else:
         st.info("No reranked results.")
-
-
-def _render_chunk_list(chunks: List[Dict[str, Any]], prefix: str = "chunk") -> None:
-    """Render a list of chunk dicts as a compact, readable table with expandable text."""
-    for ci, chunk in enumerate(chunks):
-        score = chunk.get("score", 0)
-        text = chunk.get("text", "")
-        chunk_id = chunk.get("chunk_id", "")
-        source = chunk.get("source", "")
-        title = chunk.get("title", "")
-
-        # Colour-coded score indicator
-        if score >= 0.8:
-            score_bar = "🟢"
-        elif score >= 0.5:
-            score_bar = "🟡"
-        else:
-            score_bar = "🔴"
-
-        header = f"{score_bar} **#{ci + 1}** — Score: `{score:.4f}`"
-        if title:
-            header += f" — {title}"
-
-        with st.expander(header, expanded=False):
-            cols = st.columns([2, 3])
-            with cols[0]:
-                st.caption(f"Chunk ID: `{chunk_id}`")
-            with cols[1]:
-                if source:
-                    st.caption(f"Source: `{source}`")
-            # Show chunk text (scrollable)
-            if text:
-                st.text_area(
-                    f"{prefix}_{ci}",
-                    value=text,
-                    height=max(80, min(len(text) // 2, 400)),
-                    disabled=True,
-                    label_visibility="collapsed",
-                )
-            else:
-                st.caption("_No text available_")
 
 
 def _find_stage(timings, name):
