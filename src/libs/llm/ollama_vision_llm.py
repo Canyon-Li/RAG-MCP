@@ -8,7 +8,7 @@ Ollama's /v1 endpoint is fully OpenAI-compatible, so this class inherits from
 OpenAIVisionLLM and overrides only:
 - Initialization: API key is not required, base URL defaults to localhost
 - HTTP client: trust_env=False to bypass system proxy (D-014)
-- Timeout: 120s for local inference
+- Timeout: 300s for local inference
 """
 
 from __future__ import annotations
@@ -39,7 +39,9 @@ class OllamaVisionLLM(OpenAIVisionLLM):
     """
 
     DEFAULT_BASE_URL = "http://localhost:11434/v1"
-    DEFAULT_TIMEOUT = 120.0
+    # 300s: 本地 llava-phi3 单图 caption 实测 ~128s（~3 token/s），
+    # 并发 3 路共享算力后更长，120s 会压线超时（2026-08-19 实测）
+    DEFAULT_TIMEOUT = 300.0
 
     def __init__(
         self,

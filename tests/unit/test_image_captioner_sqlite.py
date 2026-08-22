@@ -20,7 +20,7 @@ class _FakeVisionLLM:
         self._caption = caption_text
         self.calls = 0
 
-    def chat_with_image(self, text, image, trace=None):
+    def chat_with_image(self, text, image, trace=None, **kwargs):
         self.calls += 1
         return _FakeVisionResponse(content=self._caption)
 

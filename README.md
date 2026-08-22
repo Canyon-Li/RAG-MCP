@@ -98,6 +98,9 @@ ingestion:
     provider: "docling"        # 矢量图 bbox 渲染；降级链 docling→pdf_text
   chunk_refiner:
     use_llm: false             # 策略 C：溯源优先，关掉 LLM 精炼层（D-026）
+generation:
+  enabled: true                # 查询后由 LLM 生成带 [n] 引用标记的总结（D-029）
+  max_chunks: 10               # 喂给 LLM 的 chunk 上限（编号与响应引用列表一致）
 ```
 
 ### 3. 摄取、查询、启动服务
@@ -106,7 +109,7 @@ ingestion:
 # 摄取文档（PDF/DOCX，格式由 settings.yaml 的 ingestion.parser.provider 决定）
 python scripts/ingest.py --path <file-or-dir> --collection <name>
 
-# 执行一次查询（混合检索：dense + BM25 → RRF 融合）
+# 执行一次查询（混合检索：dense + BM25 → RRF 融合 → 可选 LLM 总结带 [n] 引用标记）
 python scripts/query.py --query "..." --collection <name> --top-k 10
 
 # 启动 MCP Server（Agent 通过 stdio 调用）
@@ -200,7 +203,7 @@ flowchart TB
     end
     subgraph Core["Query Pipeline"]
         QP[QueryProcessor] --> HS[Hybrid Search<br/>Dense ∥ Sparse]
-        HS --> RRF --> RR[Rerank] --> RB[ResponseBuilder]
+        HS --> RRF --> RR[Rerank] --> GEN["LLM Summary<br/>(可选, D-029)"] --> RB[ResponseBuilder]
     end
     subgraph Ingest["Ingestion · 6 stages"]
         I1[Integrity] --> I2[Parser] --> I3[Chunker]

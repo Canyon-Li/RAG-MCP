@@ -46,6 +46,7 @@ from src.core.query_engine.hybrid_search import create_hybrid_search
 from src.core.query_engine.dense_retriever import create_dense_retriever
 from src.core.query_engine.sparse_retriever import create_sparse_retriever
 from src.core.query_engine.reranker import create_core_reranker
+from src.core.query_engine.generator import create_core_generator
 from src.core.trace import TraceContext, TraceCollector
 from src.ingestion.storage.bm25_indexer import BM25Indexer
 from src.libs.embedding.embedding_factory import EmbeddingFactory
@@ -92,6 +93,12 @@ def parse_args() -> argparse.Namespace:
         "--no-rerank",
         action="store_true",
         help="Disable reranking even if enabled in settings"
+    )
+
+    parser.add_argument(
+        "--no-generate",
+        action="store_true",
+        help="Disable LLM answer generation even if enabled in settings"
     )
 
     parser.add_argument(
@@ -163,16 +170,27 @@ def _build_components(settings, collection: str):
     )
 
     reranker = create_core_reranker(settings=settings)
+    generator = create_core_generator(settings=settings)
 
-    return hybrid_search, reranker
+    return hybrid_search, reranker, generator
+
+
+def _print_generation(answer: str, model: Optional[str]) -> None:
+    print("\n" + "=" * 60)
+    print(f"AI SUMMARY (model={model or 'unknown'})")
+    print("=" * 60)
+    print(answer)
+    print("=" * 60)
 
 
 def _run_query(
     hybrid_search,
     reranker,
+    generator,
     query: str,
     top_k: Optional[int],
     use_rerank: bool,
+    use_generate: bool,
     verbose: bool,
 ) -> int:
     trace = TraceContext(trace_type="query")
@@ -235,6 +253,21 @@ def _run_query(
         print("[INFO] Reranking disabled by settings.")
 
     _print_results(results, top_k=effective_top_k)
+
+    # Optional LLM answer generation (D-027) — [n] markers map to the
+    # numbered results printed above.
+    if use_generate and generator.is_enabled:
+        try:
+            generation = generator.generate(query=query, results=results, trace=trace)
+            if generation.answer:
+                _print_generation(generation.answer, generation.model)
+            elif verbose:
+                print(f"[WARN] Generation fallback: {generation.fallback_reason}")
+        except Exception as e:
+            print(f"[WARN] Generation failed: {e}. Skipping AI summary.")
+    elif verbose and not generator.is_enabled:
+        print("[INFO] Generation disabled by settings.")
+
     TraceCollector().collect(trace)
     return 0
 
@@ -259,21 +292,24 @@ def main() -> int:
     print(f"Collection: {args.collection}")
 
     try:
-        hybrid_search, reranker = _build_components(settings, args.collection)
+        hybrid_search, reranker, generator = _build_components(settings, args.collection)
     except Exception as e:
         print(f"[FAIL] Failed to initialize query components: {e}")
         logger.exception("Query initialization failed")
         return 2
 
     use_rerank = not args.no_rerank
+    use_generate = not args.no_generate
 
     # Single-query mode
     return _run_query(
         hybrid_search=hybrid_search,
         reranker=reranker,
+        generator=generator,
         query=args.query,
         top_k=args.top_k,
         use_rerank=use_rerank,
+        use_generate=use_generate,
         verbose=args.verbose,
     )
 

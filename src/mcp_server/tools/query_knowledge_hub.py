@@ -30,6 +30,7 @@ from src.ingestion.storage.image_storage import ImageStorage
 if TYPE_CHECKING:
     from src.core.query_engine.hybrid_search import HybridSearch
     from src.core.query_engine.reranker import CoreReranker
+    from src.core.query_engine.generator import CoreGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -110,20 +111,23 @@ class QueryKnowledgeHubTool:
         hybrid_search: Optional[HybridSearch] = None,
         reranker: Optional[CoreReranker] = None,
         response_builder: Optional[ResponseBuilder] = None,
+        generator: Optional[CoreGenerator] = None,
     ) -> None:
         """Initialize QueryKnowledgeHubTool.
-        
+
         Args:
             settings: Application settings. If None, loaded from default path.
             config: Tool configuration. If None, uses defaults.
             hybrid_search: Optional pre-configured HybridSearch instance.
             reranker: Optional pre-configured CoreReranker instance.
             response_builder: Optional pre-configured ResponseBuilder instance.
+            generator: Optional pre-configured CoreGenerator instance (D-027).
         """
         self._settings = settings
         self.config = config or QueryKnowledgeHubConfig()
         self._hybrid_search = hybrid_search
         self._reranker = reranker
+        self._generator = generator
         self._embedding_client = None
 
         # Cross-collection singleton ImageStorage (same DB as pipeline),
@@ -177,6 +181,7 @@ class QueryKnowledgeHubTool:
         from src.core.query_engine.dense_retriever import create_dense_retriever
         from src.core.query_engine.sparse_retriever import create_sparse_retriever
         from src.core.query_engine.reranker import create_core_reranker
+        from src.core.query_engine.generator import create_core_generator
         from src.ingestion.storage.bm25_indexer import BM25Indexer
         from src.libs.embedding.embedding_factory import EmbeddingFactory
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory
@@ -187,6 +192,9 @@ class QueryKnowledgeHubTool:
         
         if self._reranker is None:
             self._reranker = create_core_reranker(settings=self.settings)
+
+        if self._generator is None:
+            self._generator = create_core_generator(settings=self.settings)
         
         # === Rebuild for new collection ===
         # ChromaDB PersistentClient uses SQLite under the hood —
@@ -290,12 +298,21 @@ class QueryKnowledgeHubTool:
                 results = await asyncio.to_thread(
                     self._apply_rerank, query, results, effective_top_k, trace,
                 )
-            
+
+            # Generate LLM answer over the final results (may call LLM API);
+            # degrades to None on any failure so the response stays valid.
+            generated_answer = None
+            if results:
+                generated_answer = await asyncio.to_thread(
+                    self._generate_answer, query, results, trace,
+                )
+
             # Build response
             response = self._response_builder.build(
                 results=results,
                 query=query,
                 collection=effective_collection,
+                generated_answer=generated_answer,
             )
             
             # Store final results in trace for dashboard display
@@ -397,6 +414,40 @@ class QueryKnowledgeHubTool:
         except Exception as e:
             logger.warning(f"Reranking failed, using original order: {e}")
             return results[:top_k]
+
+    def _generate_answer(
+        self,
+        query: str,
+        results: List[RetrievalResult],
+        trace: Optional[Any] = None,
+    ) -> Optional[str]:
+        """Generate an LLM answer over the final results (D-027).
+
+        Args:
+            query: Original query.
+            results: Final retrieval results (order defines [n] numbering).
+            trace: Optional TraceContext for observability.
+
+        Returns:
+            Generated answer text with [n] citation markers, or None when
+            generation is disabled or failed (graceful degradation).
+        """
+        if self._generator is None or not self._generator.is_enabled:
+            return None
+
+        try:
+            generation = self._generator.generate(
+                query=query, results=results, trace=trace,
+            )
+            if generation.used_fallback:
+                logger.warning(
+                    f"Generation fallback: {generation.fallback_reason}"
+                )
+                return None
+            return generation.answer
+        except Exception as e:
+            logger.warning(f"Generation failed, skipping AI summary: {e}")
+            return None
     
     def _build_error_response(
         self,

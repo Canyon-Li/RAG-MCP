@@ -86,7 +86,7 @@ Observability           ─ src/observability/   trace context + Streamlit dashb
 ### Two pipelines, both traced end-to-end
 
 - **Ingestion** (`src/ingestion/pipeline.py::IngestionPipeline`): FileIntegrity (SHA256 skip) → `ParserFactory.create()` (provider from `ingestion.parser`) → DocumentChunker (LangChain `RecursiveCharacterTextSplitter`) → Transform (ChunkRefiner + MetadataEnricher + ImageCaptioner) → Dense+Sparse encoding → Upsert (Chroma + BM25 + ImageStorage).
-- **Query** (`src/core/query_engine/`): QueryProcessor (jieba keyword extraction + filters) → parallel Dense (embedding cosine) + Sparse (BM25) → **RRF fusion** → optional Rerank (none / cross_encoder / llm) → ResponseBuilder (citations + multimodal assembly).
+- **Query** (`src/core/query_engine/`): QueryProcessor (jieba keyword extraction + filters) → parallel Dense (embedding cosine) + Sparse (BM25) → **RRF fusion** → optional Rerank (none / cross_encoder / llm) → optional LLM Generation (D-029, `CoreGenerator`) → ResponseBuilder (citations + multimodal assembly).
 
 Both pipelines take an explicit `TraceContext` (`src/core/trace/`) that records each stage's `method`/`provider`/latency and flushes one JSON Lines record to `logs/traces.jsonl`. The dashboard reads that file — it has no other API. **Stage names are stable categories** (`retrieval`, `rerank`, …); the concrete method goes in a `method`/`details` field so swapping backends doesn't break dashboard rendering.
 

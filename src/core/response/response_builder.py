@@ -165,30 +165,36 @@ class ResponseBuilder:
         query: str,
         collection: Optional[str] = None,
         include_images: bool = True,
+        generated_answer: Optional[str] = None,
     ) -> MCPToolResponse:
         """Build MCP response from retrieval results.
-        
+
         Args:
             results: List of RetrievalResult from search.
             query: Original user query.
             collection: Optional collection name.
             include_images: Whether to include images in response (default: True).
-            
+            generated_answer: Optional LLM-generated answer with [n] citation
+                markers (D-027). Its [n] indices align with the citation list
+                because both are 1-based over the same result order.
+
         Returns:
             MCPToolResponse with formatted content, citations, and optional images.
         """
         # Handle empty results
         if not results:
             return self._build_empty_response(query, collection)
-        
+
         # Generate citations
         citations = self.citation_generator.generate(results)
-        
-        # Build Markdown content
-        content = self._build_markdown_content(results, citations, query)
-        
+
+        # Build Markdown content (AI answer section first when available)
+        content = self._build_markdown_content(results, citations, query, generated_answer)
+
         # Build metadata
         metadata = self._build_metadata(query, collection, len(results))
+        if generated_answer:
+            metadata["generated"] = True
         
         # Assemble image content if enabled
         image_contents: List[types.ImageContent] = []
@@ -252,19 +258,29 @@ class ResponseBuilder:
         results: List[RetrievalResult],
         citations: List[Citation],
         query: str,
+        generated_answer: Optional[str] = None,
     ) -> str:
         """Build Markdown content with inline citations.
-        
+
         Args:
             results: List of RetrievalResult.
             citations: List of Citation objects.
             query: Original query string.
-            
+            generated_answer: Optional LLM answer with [n] markers, rendered
+                as a leading "AI 摘要" section.
+
         Returns:
             Formatted Markdown string.
         """
         lines = []
-        
+
+        # AI-generated answer section (D-027) — its [n] markers reference
+        # the same numbered citation list rendered at the bottom.
+        if generated_answer and generated_answer.strip():
+            lines.append("## AI 摘要\n")
+            lines.append(generated_answer.strip())
+            lines.append("")
+
         # Header
         lines.append(f"## 检索结果\n")
         lines.append(f"针对查询 **\"{query}\"** 找到 {len(results)} 条相关结果:\n")

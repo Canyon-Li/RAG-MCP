@@ -221,11 +221,19 @@ class ImageStorage:
         
         conn = sqlite3.connect(self.db_path)
         try:
-            # Use INSERT OR REPLACE for idempotent operation
+            # Idempotent upsert. NOT INSERT OR REPLACE: REPLACE deletes the
+            # existing row first, which would NULL out a caption written by an
+            # earlier ImageCaptioner run on re-ingest.
             conn.execute("""
-                INSERT OR REPLACE INTO image_index 
+                INSERT INTO image_index
                 (image_id, file_path, collection, doc_hash, page_num, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(image_id) DO UPDATE SET
+                    file_path=excluded.file_path,
+                    collection=excluded.collection,
+                    doc_hash=excluded.doc_hash,
+                    page_num=excluded.page_num,
+                    created_at=excluded.created_at
             """, (image_id, stored_path, collection, doc_hash, page_num, now))
             
             conn.commit()
@@ -292,11 +300,19 @@ class ImageStorage:
         
         conn = sqlite3.connect(self.db_path)
         try:
-            # Use INSERT OR REPLACE for idempotent operation
+            # Idempotent upsert. NOT INSERT OR REPLACE: REPLACE deletes the
+            # existing row first, which would NULL out a caption written by an
+            # earlier ImageCaptioner run on re-ingest.
             conn.execute("""
-                INSERT OR REPLACE INTO image_index 
+                INSERT INTO image_index
                 (image_id, file_path, collection, doc_hash, page_num, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(image_id) DO UPDATE SET
+                    file_path=excluded.file_path,
+                    collection=excluded.collection,
+                    doc_hash=excluded.doc_hash,
+                    page_num=excluded.page_num,
+                    created_at=excluded.created_at
             """, (image_id, stored_path, collection, doc_hash, page_num, now))
             
             conn.commit()

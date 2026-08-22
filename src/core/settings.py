@@ -156,6 +156,18 @@ class ObservabilitySettings:
 
 
 @dataclass(frozen=True)
+class GenerationSettings:
+    """Optional query-side LLM answer generation (see CoreGenerator).
+
+    Absent section → generation disabled (plain retrieval response).
+    """
+    enabled: bool
+    max_chunks: int = 10
+    max_chunk_chars: int = 1500
+    max_context_chars: int = 12000
+
+
+@dataclass(frozen=True)
 class VisionLLMSettings:
     enabled: bool
     provider: str
@@ -202,6 +214,7 @@ class Settings:
     observability: ObservabilitySettings
     ingestion: Optional[IngestionSettings] = None
     vision_llm: Optional[VisionLLMSettings] = None
+    generation: Optional[GenerationSettings] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Settings":
@@ -250,6 +263,25 @@ class Settings:
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
                 parser=parser_settings,
+            )
+
+        generation_settings = None
+        if "generation" in data:
+            generation = _require_mapping(data, "generation", "settings")
+            generation_settings = GenerationSettings(
+                enabled=_require_bool(generation, "enabled", "generation"),
+                max_chunks=(
+                    _require_int(generation, "max_chunks", "generation")
+                    if "max_chunks" in generation else 10
+                ),
+                max_chunk_chars=(
+                    _require_int(generation, "max_chunk_chars", "generation")
+                    if "max_chunk_chars" in generation else 1500
+                ),
+                max_context_chars=(
+                    _require_int(generation, "max_context_chars", "generation")
+                    if "max_context_chars" in generation else 12000
+                ),
             )
 
         vision_llm_settings = None
@@ -320,6 +352,7 @@ class Settings:
             ),
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
+            generation=generation_settings,
         )
 
         return settings

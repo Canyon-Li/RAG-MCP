@@ -18,6 +18,9 @@ from dataclasses import dataclass
 from src.core.types import Chunk
 from src.ingestion.embedding.dense_encoder import DenseEncoder
 from src.ingestion.embedding.sparse_encoder import SparseEncoder
+from src.observability.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -135,7 +138,9 @@ class BatchProcessor:
         if not chunks:
             raise ValueError("Cannot process empty chunks list")
         
-        start_time = time.time()
+        # perf_counter: high-resolution monotonic clock — time.time() on
+        # Windows has ~15ms granularity and can measure 0.0 for fast batches
+        start_time = time.perf_counter()
         
         # Create batches
         batches = self._create_batches(chunks)
@@ -148,7 +153,7 @@ class BatchProcessor:
         failed_chunks = 0
         
         for batch_idx, batch in enumerate(batches):
-            batch_start = time.time()
+            batch_start = time.perf_counter()
             
             try:
                 # Dense encoding
@@ -162,15 +167,22 @@ class BatchProcessor:
                 successful_chunks += len(batch)
                 
             except Exception as e:
-                # Record failure but continue with remaining batches
+                # Record failure but continue with remaining batches.
+                # Log loudly: a silently swallowed batch failure shrinks the
+                # vector lists and only surfaces later as an opaque
+                # "Chunk count must match vector count" upsert error.
                 failed_chunks += len(batch)
+                logger.error(
+                    f"Batch {batch_idx} ({len(batch)} chunks) encoding failed, "
+                    f"skipped: {e}"
+                )
                 if trace:
                     trace.record_stage(
                         f"batch_{batch_idx}_error",
                         {"error": str(e), "batch_size": len(batch)}
                     )
             
-            batch_duration = time.time() - batch_start
+            batch_duration = time.perf_counter() - batch_start
             
             # Record batch timing if trace available
             if trace:
@@ -183,7 +195,7 @@ class BatchProcessor:
                     }
                 )
         
-        total_time = time.time() - start_time
+        total_time = time.perf_counter() - start_time
         
         # Record overall processing statistics
         if trace:
