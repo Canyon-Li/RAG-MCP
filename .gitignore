@@ -128,3 +128,9 @@ tests/fixtures/eval_docs/*.pdf
 # One-off analysis scratch / other tools' session memory
 output.txt
 scripts/_pdf_text/
+
+# Interview/resume strategy doc — machine-local only, never publish
+docs/interview-package.md
+
+# Root-level research-report PDFs (copyright — samples stay local, untracked)
+/*.pdf

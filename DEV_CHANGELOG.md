@@ -43,6 +43,9 @@
 | D-026 | 2026-08-13 | chunk_refiner 关闭 LLM 精炼层（策略 C：溯源优先确定性，规则层恒执行） | 采纳 | PR #7 |
 | D-027 | 2026-08-14 | DoclingParser 分批转换（每批新 converter，默认批 8）修长文档 std::bad_alloc 静默缺页 | 采纳 | feat/eval-speedup |
 | D-028 | 2026-08-17 | 评估体系 v2：新增 context_recall + judge 切 DeepSeek（env 驱动 + dotenv）；五指标全量基线落地 | 采纳 | feat/eval-speedup |
+| D-029 | 2026-08-19 | 查询侧新增 LLM 生成阶段（CoreGenerator）：检索 top-k → 带行内 [n] 引用标记的 LLM 总结 | 采纳 | [generator.py](src/core/query_engine/generator.py) |
+| D-030 | 2026-08-22 | embedding 切中文向 bge-m3（受控 A/B：中文评测集 15 题 + collection 克隆法，precision@5 0.787 vs nomic 0.693） | 采纳 | [embedding-ab-zh.md](docs/embedding-ab-zh.md) |
+| D-031 | 2026-08-22 | 研报版本管理三层落地：业务指纹（法定要素正则）+ supersede 级联清理（修 2 个存储一致性 bug）+ embedding/caption 持久缓存；vision 切 qwen3-vl:4b | 采纳 | [incremental-versioning-report.md](docs/incremental-versioning-report.md) |
 
 ---
 
@@ -116,6 +119,15 @@
 - **遗留**：逐条明细文件未持久化（aggregate 已存档 logs/eval_v2_baseline_deepseek.json）；"目标 chunk 有无进 top-5" 仍无指标（anchor_hit@5 可作 v3，锚文本 GT 与 source 指标同构）。D-017 的 ragas 半成品状态就此解除（框架已完整测试 + 真实基线落地）。
 - **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[evaluate.py](scripts/evaluate.py)（dotenv）；spec [2026-08-16-context-recall-deepseek-judge-design.md](docs/superpowers/specs/2026-08-16-context-recall-deepseek-judge-design.md)；基线 [eval-v2-baseline-report.md](docs/eval-v2-baseline-report.md)。与 [[D-014]]（trust_env 方向性）、[[D-027]]（chunk_id 脆弱性证据）、[[D-017]]（解除待决）关联。
 
+### D-029 查询侧新增 LLM 生成阶段（CoreGenerator，检索结果 → 带行内引用的 LLM 总结）
+- **状态**：采纳。
+- **背景**：项目原本是纯检索服务（RAG 的 R），`query_knowledge_hub` 只返回 chunk + 引用，生成交给消费方 Agent。用户明确要求查询侧直接产出 LLM 总结（"llm给总结也要给出引用源"），且要求引用可溯源到具体来源。
+- **备选**：① 生成放在 MCP tool 层内联写死（不可复用，CLI/eval 用不上）；② 新建 libs 层 GeneratorFactory 插件体系（过度设计——生成策略只有一个"调 LLM"，LLM 本身已由 LLMFactory 插件化）；③ core 层独立 stage 类，仿 CoreReranker 模式，由各调用方（MCP tool / CLI / eval）自行接线。
+- **决策**：选 ③。新增 [generator.py](src/core/query_engine/generator.py) `CoreGenerator`：`settings.generation`（可选段，缺失=禁用，镜像 vision_llm 模式）→ `LLMFactory.create(settings.llm)` → prompt（[config/prompts/generation.txt](config/prompts/generation.txt)，`{query}`/`{context}` 占位符）→ 上下文按结果顺序 1-based 编号 `[n] (source (p.x))`，**与 CitationGenerator 的引用列表编号天然对齐**（同一结果顺序），LLM 只需输出 [n] 标记即可溯源。ResponseBuilder 新增 `generated_answer` 参数渲染 "## AI 摘要" 段；MCP tool 在 rerank 后 `asyncio.to_thread` 调用；CLI 同步调用 + `--no-generate`。trace stage 名 `generation`（data 含 method/provider/model/input_count）。
+- **理由**：与 rerank 完全同构的可选 stage 模式（config 驱动 + graceful degradation + trace），三处调用方零重复逻辑；[n] 对齐复用既有引用编号，不发明第二套引用体系；prompt 外置沿用 config/prompts 约定。上下文三重截断（max_chunks=10 / 单 chunk 1500 字 / 总 12000 字）防止 top-10 长文档撑爆 token。
+- **代价 / 现状**：① 每次查询多一次 LLM 调用（glm-4-flash 免费，延迟 +2-5s），`generation.enabled: false` 或 `--no-generate` 可关；② LLM 失败/缺 prompt/空结果全部降级为纯检索响应（answer=None，`used_fallback` 记原因），单测 14 个覆盖全部分支；③ 既有 2 个测试失败经 stash 对照确认是 main 预存（mcp SDK 降级后断言漂移 + 计时 flake），与本次无关。E2E：CLI 与 MCP stdio 双路验证通过（天力复合半年报 → glm-4-flash 中文总结 + [1] 标记对准引用列表）。
+- **关联**：[generator.py](src/core/query_engine/generator.py)；[test_generator.py](tests/unit/test_generator.py)；[generation.txt](config/prompts/generation.txt)；[response_builder.py](src/core/response/response_builder.py)（`generated_answer`）；模式同构 [[D-005]]（graceful degradation）、[[D-024]]（llm 后端=智谱 glm-4-flash 的当前运行时事实）。
+
 ---
 
 ## C. Provider / 运行时选型
@@ -159,6 +171,29 @@
 - **理由**：溯源场景优先**确定性**——即便 prompt 明令禁止改写，8B 模型实际执行仍可能微调措辞（标点/冠词），有破坏逐字溯源的风险；而 docling + section-aware chunker 产出的学术文本已足够干净，LLM 精炼的边际收益小。关掉还顺带省一次性 ingest 的本地推理时间。选策略 C 而非 ②：留观察窗口，若规则层不够干净（断句/连字符残留）再开。
 - **代价 / 现状**：PR #7。`metadata_enricher.use_llm` 保持 `false`（tags/summary 不参与召回，本地 8B 逐 chunk 生成纯浪费 ingest 时间）。rerank 保持 `enabled: false`（场景是召回+溯源非精排喂生成，< 50 篇小库噪音不明显）。三者共同构成"本场景比通用 RAG 更轻"的减负。
 - **关联**：[chunk_refiner.py](src/ingestion/transform/chunk_refiner.py)；[settings.yaml](config/settings.yaml)；[spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md) §3.3.1。与 [[D-005]]（graceful degradation 规则）一致——规则层是确定性兜底。
+
+### D-030 embedding 切中文向 bge-m3（受控 A/B 选型：中文评测集 + collection 克隆法）
+- **状态**：采纳。
+- **背景**：D-014 定的 nomic-embed-text 是英文向模型（768 维）；项目叙事转向中文研报场景（[enterprise-rag-design.md](docs/enterprise-rag-design.md)），稠密向量质量成为检索第一变量。同时英文论文语料 PDF 已不在本地、`evaluation` collection 已清空——重建语料时把"换模型"升级为"选型实验"。主张"中文向模型更优"必须在中文语料上验证，在英文论文语料上测中文模型与主张脱节。
+- **备选**：① 盲切 bge-m3（无数据支撑）；② 在英文论文语料上 A/B（测不出中文差异，方法错误）；③ 每个候选全量重摄取生成变体（解析耗时且 chunk 文本不严格一致 → 变量不唯一）。
+- **决策**：受控克隆法——新增 [reembed_collection.py](scripts/reembed_collection.py)：从源 collection 读全量 chunk（id/text/metadata 原样）→ 指定模型重嵌 → 写入新 collection + 复制 BM25 索引（稀疏侧与模型无关）。三 collection（`zh_eval` / `zh_eval_bge_m3` / `zh_eval_qwen3e`，各 272 chunks）除稠密向量外完全一致，唯一变量=模型。语料 = 41 页中信研报（`--force` 补采，102 chunks + 54 图 caption）+ 3 份 RAG 中文样例文档；评测集 [golden_test_set_zh.json](tests/fixtures/golden_test_set_zh.json)（zh-v1.0，15 题，GT 事实全部从原文提取核实）。每轮评估前翻转 settings.yaml 保证查询侧/文档侧同模型。
+- **理由**：source_recall@5 三方全 1.0（4 文档小语料天花板，失去判别力——如实记录，语料扩充后恢复）；source_precision@5 为判别指标：**bge-m3 0.7867 > qwen3-embedding:0.6b 0.7733 > nomic-embed-text 0.6933（+9.3pt）**；嵌入吞吐 bge-m3 2.6 vs qwen3e 1.8 chunks/s（同机 Ollama）。默认切 `bge-m3` / 1024 维。完整报告 [embedding-ab-zh.md](docs/embedding-ab-zh.md)。
+- **代价 / 现状**：+1.2GB 模型；旧 768 维 collection（knowledge_hub 等）与新模型不兼容，需 reembed_collection.py 迁移或废弃；context_* judge 指标本轮未产出（`RAGAS_JUDGE_PROVIDER` env 未配，路径见 D-028），选型结论仅基于确定性指标——三 collection 已保留，配好 env 可补跑对照。
+- **顺带实锤**：`SQLiteIntegrityChecker.should_skip` 按 file_hash **全局判重、不看 collection 作用域**——研报曾入他库（success 记录）后向 zh_eval 摄取被整体跳过（`--force` 绕过）。多库场景（公有库+个人库）需按 (file_hash 或业务键, collection) 判重——业务指纹方案（enterprise-rag-design §7）的又一实证。
+- **关联**：[embedding-ab-zh.md](docs/embedding-ab-zh.md)；[reembed_collection.py](scripts/reembed_collection.py)；[golden_test_set_zh.json](tests/fixtures/golden_test_set_zh.json)；与 [[D-014]]（被迭代的原选型 + trust_env 前置）、[[D-028]]（指标体系与 judge env 前置）、[[D-025]]（BM25 分词——稀疏侧作为三变体共享的不变量）关联。
+
+### D-031 研报版本管理三层落地：业务指纹 + supersede 级联清理 + 双持久缓存（修 2 个存储一致性 bug）
+- **状态**：采纳。
+- **背景**：文件级 SHA256 判重对"同一研报多渠道分发"失效（平台打水印重编码 → 字节不同，D-030 已实锤 should_skip 跨 collection 全局判重缺陷）；且重摄取路径存在两个存储一致性 bug——①内容变更产生新 chunk_id，旧向量永久残留 Chroma（vector_upserter 注释自认 "versioning" 实为泄漏）；②BM25 `add_documents` 按 `document.id`（`doc_` 前缀）清旧 postings，但 postings 键是 `{source_path_hash8}_` 前缀，**永远不匹配**。每次重摄取还会全量重算 embedding（batch_processor 自述 Stateless）与图表描述。
+- **备选**：① 版面模型结构化抽取首页字段（版面因券商而异、脆弱，否决）；② 纯 SimHash 全文近重合（阈值难定、误合并风险，降级为 L2 兜底）；③ 业务主键靠法定披露要素全文正则（执业编号 `[SA]\d{10,14}` 格式版面无关、《发布证券研究报告暂行规定》强制披露）——**选 ③**，SimHash 作低置信兜底与审计数据。
+- **决策**（四件事一个交付）：
+  **其一，业务指纹**：新增 `src/ingestion/fingerprint/`——L1 要素抽取（执业编号/证券代码 `\d{6}.(SZ|SH|BJ)`/日期/券商，日期正文优先、文件名兜底——平台副本可能按下载日重命名）+ `business_key`（high=有执业编号；medium=代码+日期；low=SimHash 兜底）；周报系列因日期不同天然不误合并。pipeline 新增 Stage 2.7：指纹 → 同键不同字节 = 同稿新版本 → `mark_superseded` 旧记录 + purge 旧向量 + BM25 `remove_document(旧 source 前缀)`。
+  **其二，修一致性 bug**：Stage 6a upsert 前按 `source_path` purge 本文档旧向量（修孤儿向量）；BM25 清理键改传 `sha256(source_path)[:8]`（修前缀失效）；`file_integrity` 升 v2——复合主键 `(file_hash, collection)`（修跨库误跳）+ `business_key` 列 + `find_by_business_key`/`mark_superseded`，v1 库自动迁移。
+  **其三，双持久缓存**：`embedding_cache.db`（键=model+文本 sha256，DenseEncoder 查命中只嵌 miss）与 `caption_cache.db`（键=model+图片字节 sha256，image_id 内嵌文件哈希跨副本不稳故不用）。
+  **其四，vision 切 `qwen3-vl:4b`**（6GB 显存上限选 4b）：同一研报图表 caption 从 llava 的英文泛描述（"a line graph…two variables"——中文查询不可命中）变为中文业务语义（"2019-2022 营收持续增长，yoy 2021 见顶回落"）。
+- **E2E 实测**（41 页中信研报，[incremental-versioning-report.md](docs/incremental-versioning-report.md)）：水印重分发副本（字节不同、business_key 一致）→ **supersede 全自动**：旧版 102 向量+BM25 postings 清除、history 翻转、终态 272 chunks **零重复**、检索命中新版本且引用回链正确。增量收益：同字节重摄取 embed 阶段 **88s→2.2s（-97.5%，102/102 缓存命中）**，总耗时 8.2→4.15min（docling 解析占 95% 成为本栈地板）。**两项增量失效根因（实测数据）**：重编码副本的 caption 缓存 miss（docling bbox 渲染非字节确定 → 54 图全量重描述 54.6min）与 embed 缓存 ~50/102 miss（文本抽取漂移 → chunk 边界漂移实锤）。
+- **代价 / 现状**：单测 +43（fingerprint 12 / file_integrity v2 7 / dense_encoder 回归修复）；全量 1389 过、余 11 失败经 HEAD worktree 实证为预存或 WIP 引起（embedding_smoke×6、list_collections、trace_service 计时 flake 预存；settings_local_rag、protocol_handler 为分支未提交 WIP 的配置漂移）。**已知边界**：①切换 embedding 模型 = 旧维度 collection 不可增量写（zh_eval 768 维冲突实锤，迁移走 reembed_collection.py，工作库定为 zh_eval_bge_m3）；②caption 缓存键待升级感知哈希；③同业务键+同 chunk 集合的"manifest 短路"（免解析整库跳过）留作 v2。
+- **关联**：[incremental-versioning-report.md](docs/incremental-versioning-report.md)；[report_fingerprint.py](src/ingestion/fingerprint/report_fingerprint.py)；[file_integrity.py](src/libs/loader/file_integrity.py)；[dense_encoder.py](src/ingestion/embedding/dense_encoder.py)（缓存）；[embedding_cache.py](src/ingestion/embedding/embedding_cache.py)；[image_captioner.py](src/ingestion/transform/image_captioner.py)（持久缓存）；[vector_upserter.py](src/ingestion/storage/vector_upserter.py)（purge_document）；[pipeline.py](src/ingestion/pipeline.py)（Stage 2.7/6a/6b）；[make_watermarked_copy.py](scripts/make_watermarked_copy.py)；与 [[D-030]]（should_skip 缺陷实锤+选型前置）、[[D-018]]（image_id 语义）、[[D-020]]（vision 换型迭代）、[[D-027]]（解析分批）关联。
 
 ---
 

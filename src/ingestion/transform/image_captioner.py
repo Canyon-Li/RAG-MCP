@@ -29,6 +29,13 @@ IMAGE_PLACEHOLDER_PATTERN = re.compile(r'\[IMAGE:\s*([^\]]+)\]')
 # Default max parallel workers for Vision API calls
 DEFAULT_MAX_WORKERS = 3  # Lower than text LLM due to higher cost/latency
 
+# Cap caption generation length. The prompt asks for a comprehensive summary
+# and llm.max_tokens (4096) would otherwise be inherited; on a local Ollama
+# vision model (~3 token/s solo, ~1 token/s per stream with 3 workers) an
+# unbounded caption can exceed even a 300s timeout. ~200 tokens is ample
+# for retrieval-oriented captions.
+DEFAULT_CAPTION_MAX_TOKENS = 200
+
 
 class ImageCaptioner(BaseTransform):
     """Generates captions for images referenced in chunks using Vision LLM.
@@ -55,6 +62,13 @@ class ImageCaptioner(BaseTransform):
         # Caption cache: image_id -> caption string (thread-safe with lock)
         self._caption_cache: Dict[str, str] = {}
         self._cache_lock = threading.Lock()
+        # D-031: persistent caption cache keyed by (model, sha256(image bytes)).
+        # image_id is NOT stable across re-parses (docling re-renders bbox
+        # regions each run), but the rendered bytes of an identical page are —
+        # making re-distributed copies skip the Vision LLM almost entirely.
+        from src.core.settings import resolve_path
+        self._caption_db = str(resolve_path("data/db/caption_cache.db"))
+        self._init_caption_db()
 
         # Check if vision LLM is enabled in settings
         if self.settings.vision_llm and self.settings.vision_llm.enabled:
@@ -111,7 +125,17 @@ class ImageCaptioner(BaseTransform):
             if img_id in self._caption_cache:
                 logger.debug(f"Caption cache hit for image {img_id}")
                 return self._caption_cache[img_id]
-        
+
+        # D-031 persistent layer: (model, file-bytes hash) survives process
+        # restarts AND re-parses of identical content.
+        file_hash = self._image_file_hash(img_path)
+        if file_hash is not None:
+            cached_caption = self._persistent_caption_get(file_hash)
+            if cached_caption is not None:
+                with self._cache_lock:
+                    self._caption_cache[img_id] = cached_caption
+                return cached_caption
+
         # Validate path
         if not img_path or not Path(img_path).exists():
             logger.warning(f"Image path not found: {img_path}")
@@ -122,13 +146,16 @@ class ImageCaptioner(BaseTransform):
             response = self.llm.chat_with_image(
                 text=self.prompt,
                 image=image_input,
-                trace=trace
+                trace=trace,
+                max_tokens=DEFAULT_CAPTION_MAX_TOKENS,
             )
             caption = response.content
             
             # Cache the result (thread-safe write)
             with self._cache_lock:
                 self._caption_cache[img_id] = caption
+            if file_hash is not None:
+                self._persistent_caption_put(file_hash, caption)
             logger.debug(f"Generated and cached caption for image {img_id}")
             
             return caption
@@ -136,6 +163,97 @@ class ImageCaptioner(BaseTransform):
         except Exception as e:
             logger.error(f"Failed to caption image {img_path}: {e}")
             return None
+
+    # ── D-031 persistent caption cache helpers ────────────────────────────
+
+    def _init_caption_db(self) -> None:
+        """Create the caption cache table if needed (best-effort)."""
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(self._caption_db)
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS caption_cache (
+                        model TEXT NOT NULL,
+                        image_hash TEXT NOT NULL,
+                        caption TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        PRIMARY KEY (model, image_hash)
+                    )
+                    """
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.warning(f"Caption cache init failed (disabled): {e}")
+            self._caption_db = None
+
+    def _caption_model(self) -> str:
+        return getattr(self.llm, "model", type(self.llm).__name__) if self.llm else "unknown"
+
+    @staticmethod
+    def _image_file_hash(img_path: str) -> Optional[str]:
+        """SHA256 of image bytes — None if unreadable."""
+        try:
+            import hashlib
+
+            h = hashlib.sha256()
+            with open(img_path, "rb") as f:
+                for block in iter(lambda: f.read(65536), b""):
+                    h.update(block)
+            return h.hexdigest()
+        except Exception:
+            return None
+
+    def _persistent_caption_get(self, image_hash: str) -> Optional[str]:
+        if not self._caption_db:
+            return None
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(self._caption_db)
+            try:
+                cursor = conn.execute(
+                    "SELECT caption FROM caption_cache "
+                    "WHERE model = ? AND image_hash = ?",
+                    (self._caption_model(), image_hash),
+                )
+                row = cursor.fetchone()
+                return row[0] if row else None
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug(f"Caption cache read failed (ignored): {e}")
+            return None
+
+    def _persistent_caption_put(self, image_hash: str, caption: str) -> None:
+        if not self._caption_db:
+            return
+        try:
+            import sqlite3
+            from datetime import datetime, timezone
+
+            conn = sqlite3.connect(self._caption_db)
+            try:
+                conn.execute(
+                    "INSERT OR REPLACE INTO caption_cache "
+                    "(model, image_hash, caption, created_at) VALUES (?, ?, ?, ?)",
+                    (
+                        self._caption_model(),
+                        image_hash,
+                        caption,
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as e:
+            logger.debug(f"Caption cache write failed (ignored): {e}")
 
     def transform(
         self,
@@ -155,16 +273,29 @@ class ImageCaptioner(BaseTransform):
         with self._cache_lock:
             self._caption_cache.clear()
 
-        # Collect image_id -> file_path for all referenced images
+        # Collect image_id -> file_path for all referenced images.
+        # Images that already carry a persisted caption (written by a previous
+        # run via set_caption) are pre-seeded into the in-memory cache instead
+        # of being re-captioned — re-ingest then skips the local Vision LLM
+        # (~1min/image) for already-captioned images.
         images_to_caption: Dict[str, str] = {}
+        reused_captions = 0
+        seen_ids: set = set()
         for chunk in chunks:
             for img_id in self._find_referenced_image_ids(chunk.text):
-                img_id = img_id.strip()
-                if img_id in images_to_caption:
+                img_id_s = img_id.strip()
+                if img_id_s in seen_ids:
                     continue
-                file_path = self._resolve_image_path(img_id)
-                if file_path:
-                    images_to_caption[img_id] = file_path
+                seen_ids.add(img_id_s)
+                meta = self._resolve_image_meta(img_id_s)
+                if not meta:
+                    continue
+                if meta.get("caption"):
+                    with self._cache_lock:
+                        self._caption_cache[img_id_s] = meta["caption"]
+                    reused_captions += 1
+                else:
+                    images_to_caption[img_id_s] = meta["file_path"]
 
         if images_to_caption:
             self._generate_captions_parallel(images_to_caption, trace)
@@ -191,13 +322,15 @@ class ImageCaptioner(BaseTransform):
                     self.image_storage.set_caption(img_id_s, caption)
             chunk.text = new_text
 
-        with self._cache_lock:
-            api_calls = len(self._caption_cache)
-        logger.info(f"Added {total_captions_added} captions, API calls: {api_calls}")
+        api_calls = len(images_to_caption)
+        logger.info(
+            f"Added {total_captions_added} captions "
+            f"(API calls: {api_calls}, reused from storage: {reused_captions})"
+        )
         return chunks
 
-    def _resolve_image_path(self, image_id: str) -> Optional[str]:
-        """Resolve an image's file path via ImageStorage.
+    def _resolve_image_meta(self, image_id: str) -> Optional[Dict[str, Any]]:
+        """Resolve an image's metadata (file_path, caption, ...) via ImageStorage.
 
         Returns None when image_storage is not injected, when the image is
         not registered, or when the file does not exist on disk.
@@ -210,7 +343,7 @@ class ImageCaptioner(BaseTransform):
             logger.warning(f"get_image_meta failed for {image_id}: {e}")
             return None
         if meta and meta.get("file_path") and Path(meta["file_path"]).exists():
-            return meta["file_path"]
+            return meta
         return None
     
     def _generate_captions_parallel(

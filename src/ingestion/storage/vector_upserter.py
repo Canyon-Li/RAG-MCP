@@ -137,6 +137,46 @@ class VectorUpserter:
         
         return chunk_ids
     
+    def purge_document(self, source_path: str, trace: Optional[Any] = None) -> int:
+        """Delete ALL vectors belonging to a document (by source_path).
+
+        D-031: fixes orphaned vectors on re-ingest / version supersede.
+        Content changes produce NEW chunk ids ({source_hash}_{index}_{content_hash}),
+        so a plain upsert used to leave the old vectors behind forever —
+        retrieval could then surface stale content alongside (or instead of)
+        the current version.
+
+        The stored ``metadata.source_path`` is the RESOLVED absolute path;
+        *source_path* here may be either form, so both variants are tried.
+
+        Args:
+            source_path: Document source path (absolute or repo-relative).
+            trace: Optional TraceContext.
+
+        Returns:
+            Number of vectors deleted (0 if none matched / store lacks
+            metadata deletion support — graceful degradation).
+        """
+        from src.core.settings import resolve_path
+
+        candidates = {source_path, str(resolve_path(source_path))}
+
+        delete_by_metadata = getattr(self.vector_store, "delete_by_metadata", None)
+        if not callable(delete_by_metadata):
+            return 0  # provider without metadata deletion — degrade gracefully
+
+        deleted = 0
+        for candidate in candidates:
+            try:
+                deleted += delete_by_metadata(
+                    {"source_path": candidate}, trace=trace
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to purge vectors for {source_path}: {e}"
+                ) from e
+        return deleted
+
     def _generate_chunk_id(self, chunk: Chunk) -> str:
         """Generate deterministic chunk ID from content.
         

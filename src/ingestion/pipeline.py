@@ -18,6 +18,7 @@ Design Principles:
 
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Any
+import hashlib
 import time
 
 from src.core.settings import Settings, load_settings, resolve_path
@@ -39,6 +40,8 @@ from src.ingestion.transform.image_captioner import ImageCaptioner
 from src.ingestion.embedding.dense_encoder import DenseEncoder
 from src.ingestion.embedding.sparse_encoder import SparseEncoder
 from src.ingestion.embedding.batch_processor import BatchProcessor
+from src.ingestion.embedding.embedding_cache import SQLiteEmbeddingCache
+from src.ingestion.fingerprint import extract_report_fingerprint, simhash64
 from src.ingestion.storage.bm25_indexer import BM25Indexer
 from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.ingestion.storage.image_storage import ImageStorage
@@ -173,10 +176,16 @@ class IngestionPipeline:
         has_vision = self.image_captioner.llm is not None
         logger.info(f"  ✓ ImageCaptioner initialized (vision_enabled={has_vision})")
         
-        # Stage 5: Encoders
+        # Stage 5: Encoders (D-031: dense encoder with persistent embedding cache)
         embedding = EmbeddingFactory.create(settings)
         batch_size = settings.ingestion.batch_size if settings.ingestion else 100
-        self.dense_encoder = DenseEncoder(embedding, batch_size=batch_size)
+        self.dense_encoder = DenseEncoder(
+            embedding,
+            batch_size=batch_size,
+            cache=SQLiteEmbeddingCache(
+                str(resolve_path("data/db/embedding_cache.db"))
+            ),
+        )
         logger.info(f"  ✓ DenseEncoder initialized (provider={settings.embedding.provider})")
         
         self.sparse_encoder = SparseEncoder()
@@ -240,7 +249,9 @@ class IngestionPipeline:
             file_hash = self.integrity_checker.compute_sha256(str(file_path))
             logger.info(f"  File hash: {file_hash[:16]}...")
             
-            if not self.force and self.integrity_checker.should_skip(file_hash):
+            if not self.force and self.integrity_checker.should_skip(
+                file_hash, self.collection
+            ):
                 logger.info(f"  ⏭️  File already processed, skipping (use force=True to reprocess)")
                 return PipelineResult(
                     success=True,
@@ -315,6 +326,66 @@ class IngestionPipeline:
                         page_num=img.get("page", 0),
                     )
             logger.info(f"  Indexed {len(images)} images")
+
+            # ─────────────────────────────────────────────────────────────
+            # Stage 2.7: Report Fingerprint & Version Management (D-031)
+            # L1: element fingerprint from legally-mandated disclosure
+            #     elements (cert ids / security codes / date / broker).
+            # Same business_key + different file bytes = a new version of
+            # the SAME logical report (e.g. watermarked re-distribution) →
+            # supersede the old record and purge its chunks from both
+            # stores. L2 SimHash is computed for trace/audit; element
+            # extraction stays the decision path (deterministic).
+            # ─────────────────────────────────────────────────────────────
+            logger.info("\n🧬 Stage 2.7: Report Fingerprint")
+            _t0_fp = time.monotonic()
+            fingerprint = extract_report_fingerprint(
+                document.text[:4000], file_path.name
+            )
+            fingerprint_simhash = simhash64(document.text)
+
+            superseded_records: list = []
+            if fingerprint.business_key:
+                existing = self.integrity_checker.find_by_business_key(
+                    fingerprint.business_key,
+                    self.collection,
+                    exclude_file_hash=file_hash,
+                )
+                for rec in existing:
+                    old_path = rec["file_path"]
+                    purged_vectors = self.vector_upserter.purge_document(old_path)
+                    old_prefix = hashlib.sha256(
+                        str(resolve_path(old_path)).encode("utf-8")
+                    ).hexdigest()[:8]
+                    self.bm25_indexer.remove_document(old_prefix, self.collection)
+                    self.integrity_checker.mark_superseded(
+                        rec["file_hash"], self.collection
+                    )
+                    superseded_records.append({
+                        "old_file_hash": rec["file_hash"][:16],
+                        "old_file_path": old_path,
+                        "purged_vectors": purged_vectors,
+                    })
+                    logger.info(
+                        f"  ↪ Superseded old version {rec['file_hash'][:12]}… "
+                        f"(purged {purged_vectors} vectors, same business_key)"
+                    )
+            logger.info(
+                f"  business_key={fingerprint.business_key} "
+                f"(confidence={fingerprint.confidence}, broker={fingerprint.broker}, "
+                f"date={fingerprint.report_date})"
+            )
+            stages["fingerprint"] = {
+                **fingerprint.to_metadata(),
+                "superseded": superseded_records,
+            }
+            if trace is not None:
+                trace.record_stage("fingerprint", {
+                    "method": "elements",
+                    **fingerprint.to_metadata(),
+                    "simhash": fingerprint_simhash,
+                    "superseded": superseded_records,
+                }, elapsed_ms=(time.monotonic() - _t0_fp) * 1000.0)
 
             # ─────────────────────────────────────────────────────────────
             # Stage 3: Chunking
@@ -462,6 +533,11 @@ class IngestionPipeline:
                     "dense_vector_count": len(dense_vectors),
                     "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
                     "sparse_doc_count": len(sparse_stats),
+                    "embedding_cache": getattr(
+                        getattr(self, "dense_encoder", None),
+                        "last_cache_stats",
+                        None,
+                    ),
                     "chunks": chunk_details,
                 }, elapsed_ms=_elapsed)
             
@@ -474,6 +550,16 @@ class IngestionPipeline:
             # 6a: Vector Upsert
             logger.info("  6a. Vector Storage (ChromaDB)...")
             _t0_storage = time.monotonic()
+            # D-031: purge this document's previous vectors FIRST. Content
+            # changes produce new chunk ids, so without this the old vectors
+            # would linger forever (orphaned-stale-content bug).
+            doc_source_path = (
+                chunks[0].metadata.get("source_path", str(file_path))
+                if chunks else str(file_path)
+            )
+            purged_before = self.vector_upserter.purge_document(doc_source_path)
+            if purged_before:
+                logger.info(f"      Purged {purged_before} stale vectors (pre-upsert)")
             vector_ids = self.vector_upserter.upsert(chunks, dense_vectors, trace)
             logger.info(f"      Stored {len(vector_ids)} vectors")
 
@@ -484,10 +570,16 @@ class IngestionPipeline:
 
             # 6b: BM25 Index
             logger.info("  6b. BM25 Index...")
+            # D-031 fix: postings are keyed by vector ids whose prefix is
+            # sha256(source_path)[:8] — removing by document.id ("doc_…")
+            # never matched anything. Remove by the real source prefix.
+            source_prefix = hashlib.sha256(
+                doc_source_path.encode("utf-8")
+            ).hexdigest()[:8]
             self.bm25_indexer.add_documents(
                 sparse_stats,
                 collection=self.collection,
-                doc_id=document.id,
+                doc_id=source_prefix,
                 trace=trace,
             )
             logger.info(f"      Index built for {len(sparse_stats)} documents")
@@ -544,7 +636,10 @@ class IngestionPipeline:
             # ─────────────────────────────────────────────────────────────
             # Mark Success
             # ─────────────────────────────────────────────────────────────
-            self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
+            self.integrity_checker.mark_success(
+                file_hash, str(file_path), self.collection,
+                business_key=fingerprint.business_key,
+            )
             
             _final_images = document.metadata.get("images", [])
             logger.info("\n" + "=" * 60)
@@ -566,7 +661,9 @@ class IngestionPipeline:
             
         except Exception as e:
             logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
-            self.integrity_checker.mark_failed(file_hash, str(file_path), str(e))
+            self.integrity_checker.mark_failed(
+                file_hash, str(file_path), str(e), self.collection
+            )
             
             return PipelineResult(
                 success=False,

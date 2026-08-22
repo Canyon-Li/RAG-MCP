@@ -1,0 +1,96 @@
+{
+  "description": "中文双语料评测集（券商研报 + RAG 技术文档，4 文档 / 15 题）。用于中文向 embedding 选型 A/B（D-030）：所有 expected_sources 为摄取时的文件 basename，与 CustomEvaluator 的 basename 归一化匹配对齐。GT 事实均从文档原文提取。",
+  "version": "zh-v1.0",
+  "test_cases": [
+    {
+      "query": "中信证券给润泽科技的目标价和投资评级是什么？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "目标价 46.00 元，投资评级为\"买入\"（首次覆盖）。当前价 33.56 元，对应 2023 年 43 倍 PE。"
+    },
+    {
+      "query": "润泽科技的数据中心在全国哪些区域有布局？总体规划是多少栋数据中心、多少万个机柜？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "在京津冀、长三角、大湾区、成渝经济圈和西北地区 5 个区域布局 6 个超大规模数据中心；总体规划 56 栋数据中心、29 万个机柜。"
+    },
+    {
+      "query": "廊坊A区承诺2021-2024年的扣非归母净利润分别不低于多少？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "2021-2024 年扣非归母净利润分别不低于 6.12 / 10.98 / 17.94 / 20.95 亿元。"
+    },
+    {
+      "query": "润泽科技2019到2022年收入和扣非归母净利润的年复合增速大约是多少？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "2019-2022 年收入 CAGR 超 40%，扣非归母净利润约 CAGR 119%。"
+    },
+    {
+      "query": "润泽科技的终端客户包括哪些互联网公司？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "终端客户覆盖字节、华为、京东、快手、美团等优质互联网客户。"
+    },
+    {
+      "query": "报告认为润泽科技面临哪些风险因素？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "能耗、供电、土地等相关政策波动风险；流量增长不及预期；AI 发展不及预期；云厂商 Capex 增长不及预期；公司 IDC 机柜扩张、机柜上架率提升、客户拓展不及预期。"
+    },
+    {
+      "query": "润泽科技2022年的毛利率是多少？与同行业相比处于什么水平？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "2022 年毛利率 53%，远高于同行业。"
+    },
+    {
+      "query": "润泽科技在液冷机柜方面的交付进展如何？",
+      "expected_sources": ["2023-06-12_中信证券_润泽科技(300442)投资价值分析报告：园区级IDC龙头，深度受益AI+数字经济.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "公司正在交付 10KW 以上传统机柜及 20KW 以上的液冷机柜，并将向智算中心和超算中心快速演进。"
+    },
+    {
+      "query": "混合检索加Cross-Encoder重排方案的Precision@5、Recall@10和平均延迟分别是多少？",
+      "expected_sources": ["chinese_table_chart_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "Precision@5=0.85、Recall@10=0.82、NDCG@10=0.88、平均延迟 89ms；精度指标最佳但延迟相对较高。"
+    },
+    {
+      "query": "分块参数调优实验最终推荐的chunk size和overlap是多少？依据是什么？",
+      "expected_sources": ["chinese_table_chart_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "推荐 chunk_size=1000、overlap=200（Hit Rate 0.82、MRR 0.76）：在保留足够上下文的同时获得较高检索精度；分块过小上下文丢失，过大则噪声增加、检索不精确。"
+    },
+    {
+      "query": "评测报告中本地部署且中文质量被评为优秀的Embedding模型有哪些？",
+      "expected_sources": ["chinese_table_chart_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "BGE-large-zh（1024 维，延迟 15ms）与 GTE-large-zh（1024 维，延迟 18ms），均为免费本地部署、中文质量优秀。"
+    },
+    {
+      "query": "Naive RAG有哪些缺点？Advanced RAG在此基础上做了哪些优化？",
+      "expected_sources": ["chinese_technical_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "Naive RAG 缺点：检索质量受限于单一向量相似度、缺乏重排序机制、无法处理多跳推理。Advanced RAG 引入查询改写、混合检索（Dense+Sparse）、重排序（Cross-Encoder 或 LLM）与文档分块优化。"
+    },
+    {
+      "query": "为什么中文文本的Token数量往往多于等长的英文文本？这对RAG系统的分块设计有什么影响？",
+      "expected_sources": ["chinese_technical_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "中文场景下 BPE 通常将每个汉字拆分为一个或多个 Token，因此中文文本 Token 数往往多于等长英文文本，这对 RAG 系统的 Chunk 大小设计有直接影响。"
+    },
+    {
+      "query": "KV Cache的作用是什么？它把推理的时间复杂度从多少降低到多少？主要瓶颈是什么？",
+      "expected_sources": ["chinese_long_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "KV Cache 缓存自回归生成中已计算的 Key/Value 向量、避免重复计算，将推理时间复杂度从 O(n²) 降低到 O(n)；但显存占用随序列长度线性增长，是处理长上下文的主要瓶颈，常见优化为 GQA、MQA。"
+    },
+    {
+      "query": "RoPE旋转位置编码的原理是什么？有哪些主流模型采用了它？",
+      "expected_sources": ["chinese_long_doc.pdf"],
+      "expected_chunk_ids": [],
+      "reference": "RoPE 通过旋转向量的方式将相对位置信息编码到注意力计算中，在支持更长上下文的同时保持良好泛化；LLaMA、GPT-NeoX 等模型广泛采用。"
+    }
+  ]
+}

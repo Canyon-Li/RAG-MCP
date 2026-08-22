@@ -6,13 +6,13 @@
 # LLM Configuration
 # =============================================================================
 llm:
-  provider: "ollama"  # 本地 LLM（绝对本地/防泄露）；granite4.1:8b 决策见场景适配 spec
-  model: "granite4.1:8b"
+  provider: "zhipu"  # 云端智谱 glm-4-flash（免费）；用户选择，granite4.1:8b 不再使用
+  model: "glm-4-flash"
   deployment_name: ""
   azure_endpoint: ""
   api_version: ""
-  api_key: ""  # 本地 ollama 无需 key
-  base_url: "http://localhost:11434/v1"  # /v1 供 vision/embedding 的 OpenAI 兼容端点;text OllamaLLM 自动剥 /v1 用原生 /api/chat。三个 ollama 模块均 trust_env=False 绕系统代理(D-014)
+  api_key: ""  # 从 .env 的 ZHIPUAI_API_KEY 读取（ZhipuLLM 支持 env var；key 不入库）
+  base_url: "https://open.bigmodel.cn/api/paas/v4"  # 智谱 OpenAI 兼容端点（BigModel v4）
   temperature: 0.0
   max_tokens: 4096
 
@@ -20,9 +20,9 @@ llm:
 # Embedding Configuration
 # =============================================================================
 embedding:
-  provider: "ollama"  # 本地 Ollama（nomic-embed-text）；决策见 D-014。base_url from $OLLAMA_BASE_URL（default http://localhost:11434），httpx 需 trust_env=False 绕系统代理
-  model: "nomic-embed-text"
-  dimensions: 768  # nomic-embed-text output dim; reported to vector store via get_dimension
+  provider: "ollama"  # 本地 Ollama；决策见 D-014/D-030。base_url from $OLLAMA_BASE_URL（default http://localhost:11434），httpx 需 trust_env=False 绕系统代理
+  model: "bge-m3"  # D-030 A/B 选型胜者（中文语料 precision@5 0.787 vs nomic 0.693）；见 docs/embedding-ab-zh.md
+  dimensions: 1024  # bge-m3 output dim; reported to vector store via get_dimension
   azure_endpoint: ""
   deployment_name: ""
   api_version: ""
@@ -34,8 +34,8 @@ embedding:
 # =============================================================================
 vision_llm:
   enabled: true  # 默认启用（D-020）；ImageCaptioner 据此决定是否调 Vision LLM
-  provider: "ollama"  # 本地 Vision LLM；决策见 D-020
-  model: "llava-phi3:3.8b"
+  provider: "ollama"  # 本地 Vision LLM；决策见 D-020 / D-031 换型
+  model: "qwen3-vl:4b"  # D-031: 图表/文档理解升级（6GB 显存上限选 4b）；llava-phi3 为旧默认
   azure_endpoint: ""
   deployment_name: ""
   api_version: ""
@@ -68,6 +68,15 @@ rerank:
   provider: "none"
   model: "none"
   top_k: 5
+
+# =============================================================================
+# Generation Configuration (query-side LLM answer synthesis, D-027)
+# =============================================================================
+generation:
+  enabled: true       # 检索后由 LLM 生成带 [n] 引用标记的总结（settings.llm 后端）
+  max_chunks: 10      # 喂给 LLM 的 chunk 上限（编号与响应引用列表一致）
+  max_chunk_chars: 1500    # 单 chunk 上下文截断
+  max_context_chars: 12000 # 总上下文截断（前序优先）
 
 # =============================================================================
 # Evaluation Configuration
