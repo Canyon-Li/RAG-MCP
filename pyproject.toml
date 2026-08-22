@@ -33,6 +33,9 @@ dependencies = [
     "python-docx>=1.1.0",  # J2: WordLoader fallback text extraction (and test fixtures)
     "pdfplumber>=0.10.0",  # K4′: PdfTableParser native table extraction
     "streamlit>=1.30.0",
+    "fastapi>=0.110",  # D-032: multi-tenant web service (src/api/)
+    "python-multipart>=0.0.9",  # D-032: FastAPI file upload parsing
+    "uvicorn>=0.29",  # D-032: ASGI server
     "ragas>=0.1.0",
     "datasets>=2.0.0",
     # Runtime providers & parsers — previously only survived via transitive deps

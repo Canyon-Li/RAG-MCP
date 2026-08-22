@@ -139,6 +139,20 @@ MCP Server 通过 stdio + JSON-RPC 通信。在 MCP 客户端配置中添加以�
 
 > **Dashboard 预览**：项目内置一个 6 页的 Streamlit 管理界面，支持查看 Trace、管理集合、执行评估回归。运行 `python scripts/start_dashboard.py` 后访问 `http://localhost:8501` 即可使用。
 
+### Web 问答服务（多租户，D-032）
+
+除 MCP 接入外，系统同时以**纯 Web 服务**形态提供问答（公有库 + 个人库多租户，服务端 ACL）：
+
+```powershell
+# 终端 1：FastAPI 服务（默认 :8300；种子用户 u001=业务员 / admin001=管理员）
+uvicorn src.api.app:app --port 8300
+
+# 终端 2：Streamlit 聊天页（引用展开、个人库上传）
+streamlit run scripts/chat_app.py
+```
+
+主要接口：`POST /api/query`（跨库检索+融合+带 `[n]` 引用生成）、`POST /api/ingest`（异步摄取，`GET /api/tasks/{id}` 轮询进度）、`GET /api/libraries` / `GET /api/documents`。身份经 `X-User-Id` 头传入（demo 认证，权限判定全部在服务端完成；生产部署替换为 SSO）。设计见 [docs/enterprise-rag-design.md](docs/enterprise-rag-design.md)。
+
 ---
 
 ## 评估

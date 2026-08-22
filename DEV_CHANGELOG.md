@@ -46,6 +46,7 @@
 | D-029 | 2026-08-19 | 查询侧新增 LLM 生成阶段（CoreGenerator）：检索 top-k → 带行内 [n] 引用标记的 LLM 总结 | 采纳 | [generator.py](src/core/query_engine/generator.py) |
 | D-030 | 2026-08-22 | embedding 切中文向 bge-m3（受控 A/B：中文评测集 15 题 + collection 克隆法，precision@5 0.787 vs nomic 0.693） | 采纳 | [embedding-ab-zh.md](docs/embedding-ab-zh.md) |
 | D-031 | 2026-08-22 | 研报版本管理三层落地：业务指纹（法定要素正则）+ supersede 级联清理（修 2 个存储一致性 bug）+ embedding/caption 持久缓存；vision 切 qwen3-vl:4b | 采纳 | [incremental-versioning-report.md](docs/incremental-versioning-report.md) |
+| D-032 | 2026-08-22 | Web 服务化：FastAPI 多租户问答（公有库+个人库，服务端 ACL + 跨库 RRF 融合 + 内容哈希去重）+ Streamlit 聊天页 + 异步摄取 | 采纳 | [src/api/](src/api/) |
 
 ---
 
@@ -194,6 +195,16 @@
 - **E2E 实测**（41 页中信研报，[incremental-versioning-report.md](docs/incremental-versioning-report.md)）：水印重分发副本（字节不同、business_key 一致）→ **supersede 全自动**：旧版 102 向量+BM25 postings 清除、history 翻转、终态 272 chunks **零重复**、检索命中新版本且引用回链正确。增量收益：同字节重摄取 embed 阶段 **88s→2.2s（-97.5%，102/102 缓存命中）**，总耗时 8.2→4.15min（docling 解析占 95% 成为本栈地板）。**两项增量失效根因（实测数据）**：重编码副本的 caption 缓存 miss（docling bbox 渲染非字节确定 → 54 图全量重描述 54.6min）与 embed 缓存 ~50/102 miss（文本抽取漂移 → chunk 边界漂移实锤）。
 - **代价 / 现状**：单测 +43（fingerprint 12 / file_integrity v2 7 / dense_encoder 回归修复）；全量 1389 过、余 11 失败经 HEAD worktree 实证为预存或 WIP 引起（embedding_smoke×6、list_collections、trace_service 计时 flake 预存；settings_local_rag、protocol_handler 为分支未提交 WIP 的配置漂移）。**已知边界**：①切换 embedding 模型 = 旧维度 collection 不可增量写（zh_eval 768 维冲突实锤，迁移走 reembed_collection.py，工作库定为 zh_eval_bge_m3）；②caption 缓存键待升级感知哈希；③同业务键+同 chunk 集合的"manifest 短路"（免解析整库跳过）留作 v2。
 - **关联**：[incremental-versioning-report.md](docs/incremental-versioning-report.md)；[report_fingerprint.py](src/ingestion/fingerprint/report_fingerprint.py)；[file_integrity.py](src/libs/loader/file_integrity.py)；[dense_encoder.py](src/ingestion/embedding/dense_encoder.py)（缓存）；[embedding_cache.py](src/ingestion/embedding/embedding_cache.py)；[image_captioner.py](src/ingestion/transform/image_captioner.py)（持久缓存）；[vector_upserter.py](src/ingestion/storage/vector_upserter.py)（purge_document）；[pipeline.py](src/ingestion/pipeline.py)（Stage 2.7/6a/6b）；[make_watermarked_copy.py](scripts/make_watermarked_copy.py)；与 [[D-030]]（should_skip 缺陷实锤+选型前置）、[[D-018]]（image_id 语义）、[[D-020]]（vision 换型迭代）、[[D-027]]（解析分批）关联。
+
+### D-032 Web 服务化：FastAPI 多租户问答（公有库+个人库）+ Streamlit 聊天页
+- **状态**：采纳。
+- **背景**：场景叙事（enterprise-rag-design）的问答产品形态落地——业务人员在聊天页问答、个人上传入库；多租户（公有库+个人库）的权限与检索语义是设计文档 §4/§5 的 MVP 验证目标。
+- **备选**：① 单 collection + library_id 元数据过滤（BM25 倒排无库维度，需改存储层，MVP 过重）；② **library=collection 映射**（Chroma/BM25/IngestionPipeline/查询引擎全量复用，`libraries.collection` 列解耦逻辑库与物理集合，Milvus partition 迁移留作一列改动）——选 ②。
+- **决策**：三层新增 `src/api/`：**store.py**（users/libraries SQLite + `resolve_visible_libraries`——服务端 ACL：公有库+本人个人库，客户端 requested 只能收窄不能扩权；公有库写权限 admin-only）；**service.py**（RagService：按库缓存查询组件（复用 CLI 同款 HybridSearch 栈）→ 逐库检索 → 跨库外层 RRF(k=60) → **chunk 内容哈希跨库去重（公有副本优先）** → rerank/生成（[n] 引用编号与返回顺序对齐）→ 空库/坏库优雅降级 `degraded_libraries`；摄取走标准 IngestionPipeline——D-031 指纹/supersede/双缓存对 Web 上传透明生效，异步任务带 on_progress 进度）；**app.py**（FastAPI：query/libraries/documents/ingest/tasks/health，X-User-Id header demo 认证——权限判定全部服务端，生产换 SSO；query 走 `await run_in_threadpool`）；`scripts/chat_app.py`（Streamlit 聊天页：登录选择、引用展开含库标签/页码、个人库上传）。
+- **E2E 实测**（uvicorn :8300）：① "润泽科技目标价"→ glm-4-flash 生成"46.00 元，买入（首次）[1][2][3]"，6 命中全部公有库（且为 D-031 supersede 后的新版本——版本管理对检索透明）；② 上传与公有库同内容文档到个人库（17 chunks，任务进度 6/6）→ 查询"chunk size 推荐"→ **6 条结果内容哈希零重复、公有副本胜出**——跨库去重生效；③ 空个人库不报错（degraded=[]）。
+- **踩坑**：① `run_in_threadpool` 是协程，同步端点直接 return 会把 coroutine 对象当响应体（ResponseValidationError）——必须 `async def` + `await`；② Windows curl 发中文 JSON body 编码损坏（FastAPI "error parsing the body"）——E2E 测试统一走 python requests；③ pytest monkeypatch 把 `store.f` 替换成调用 `store.f` 的 lambda → 无限递归，须先绑定原函数。
+- **代价 / 现状**：新增依赖 fastapi 0.141（TUNA）；认证最小化（X-User-Id，权限语义已验证、机制留 SSO）；单测 8 个（可见库解析/越权写/跨库去重/降级）全绿。聊天页未自动化测试（人工验收路径已给出启动命令）。
+- **关联**：[app.py](src/api/app.py)；[service.py](src/api/service.py)；[store.py](src/api/store.py)；[chat_app.py](scripts/chat_app.py)；[test_api_service.py](tests/unit/test_api_service.py)；设计 [enterprise-rag-design.md](docs/enterprise-rag-design.md) §4-§5（MVP 映射：library=collection）；与 [[D-029]]（生成阶段复用）、[[D-031]]（摄取链路复用）、[[D-030]]（zh_eval_bge_m3 为公有库语料）关联。
 
 ---
 
