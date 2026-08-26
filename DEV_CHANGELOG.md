@@ -43,6 +43,7 @@
 | D-026 | 2026-08-13 | chunk_refiner 关闭 LLM 精炼层（策略 C：溯源优先确定性，规则层恒执行） | 采纳 | PR #7 |
 | D-027 | 2026-08-14 | DoclingParser 分批转换（每批新 converter，默认批 8）修长文档 std::bad_alloc 静默缺页 | 采纳 | feat/eval-speedup |
 | D-028 | 2026-08-17 | 评估体系 v2：新增 context_recall + judge 切 DeepSeek（env 驱动 + dotenv）；五指标全量基线落地 | 采纳 | feat/eval-speedup |
+| D-029 | 2026-08-27 | 评测量具校准：锁 ragas==0.4.3 + 伪 0/NaN 剔除 + 判官噪声底实测 6.4pt/4.9pt（判读纪律升级为 3 次取中位数） | 采纳 | fix/eval-gauge-calibration |
 
 ---
 
@@ -115,6 +116,15 @@
 - **代价 / 现状**：分支 `feat/eval-speedup`（commits d531dee→aa8e66c，5 个任务全部 review Approved）。单测 32 个全绿（context_recall 4 + deepseek 分支 4 + dotenv 顺序守护 1 + 收窄回归）。**E2E 验收**：23 条 v4.0 GT（人工重标，reference 严格论断式）五指标全量跑通，基线 source_recall 0.9565 / source_precision 0.7130 / context_relevance 0.8696 / context_precision 0.6557 / context_recall 0.4942——**召回缺口（0.49）与排序噪音（0.66）并存**，B 阶段调参优先级已定（[docs/eval-v2-baseline-report.md](docs/eval-v2-baseline-report.md) §5）。**运行坑（两次死锁排查换来的）**：① deepseek 连续百+请求触发服务端限流/连接重置（CPU 0 增长、ConnectTimeout）→ 分批 2 条/批 + 15s 间隔后 12/12 批零失败；② 系统代理间歇拦截海外建连（与 D-014 同根因反方向）→ judge 走 deepseek 时避免开代理；③ DeepSeek JSON mode 要求 prompt 含 "json" 字样 + 样例，偶发空返回是文档化行为（ragas instructor 自带合规 prompt，勿误判模型坏）。
 - **遗留**：逐条明细文件未持久化（aggregate 已存档 logs/eval_v2_baseline_deepseek.json）；"目标 chunk 有无进 top-5" 仍无指标（anchor_hit@5 可作 v3，锚文本 GT 与 source 指标同构）。D-017 的 ragas 半成品状态就此解除（框架已完整测试 + 真实基线落地）。
 - **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[evaluate.py](scripts/evaluate.py)（dotenv）；spec [2026-08-16-context-recall-deepseek-judge-design.md](docs/superpowers/specs/2026-08-16-context-recall-deepseek-judge-design.md)；基线 [eval-v2-baseline-report.md](docs/eval-v2-baseline-report.md)。与 [[D-014]]（trust_env 方向性）、[[D-027]]（chunk_id 脆弱性证据）、[[D-017]]（解除待决）关联。
+
+### D-029 评测量具校准：锁 ragas==0.4.3 + 伪 0/NaN 剔除 + 判官噪声底实测
+
+- **背景**：判官指标（context_*）的非确定性可能淹没个位数百分点的检索改进，但 D-028 基线落地后从未测过噪声；量具三处没上保险——ragas 版本未锁（`>=0.1.0`，小版本有破坏性变更且判官温度随版本走）、golden 缺 reference 时记伪 0.0 混进均值、ragas 返回的 NaN 穿透 `sum/len` 算术平均毒化整条指标。
+- **决策**：① `pyproject.toml` 锁 `ragas==0.4.3`；② [ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)：缺 reference、`result.value` 为 None 或非有限值时**剔除该指标**（键缺席）而非记 0.0——伪 0 会像真实失败一样拖低均值；③ [eval_runner.py](src/observability/evaluation/eval_runner.py) `_aggregate_metrics` 聚合前过滤非有限值（与②构成双层守卫）；④ 固化判官 env 为基线同款（`RAGAS_JUDGE_PROVIDER=deepseek` + `RAGAS_JUDGE_MODEL=deepseek-v4-flash` + 默认 base_url），全量评测分批 2 条/批 × 12 批 + 批间 15s（沿用 D-028 防限流方法）。
+- **实测噪声底**（零改动配置 × 2 轮，均 12/12 批零失败）：确定性指标跨 run **精确复现到小数点后 4 位**（0.00pt）；context_relevance 聚合噪声 0.65pt、逐题完全一致（双档位制粗粒度但零噪声）；**context_precision 6.42pt / context_recall 4.85pt，均超 3pt 阈值**，逐题 mean|Δ|≈9.7pt、max 50-67pt。另发现第三种量具缺陷：判官结构化输出打满 `max_tokens=8192` → `IncompleteOutputException` → 该题三个判官指标全缺（掉题率 4-9%/run；「AES qubit counts 对比」题两轮全掉，属结构性溢出）。
+- **代价 / 纪律**：判读规则升级——同配置跑 **3 次**取**中位数**为代表值，差异 < 噪声底（precision 6.5pt / recall 5pt）的改动视为无效果；达标判定 = 中位数过线且 3 次中至少 2 次过线；掉题 >3/23 的 run 作废重跑。08-16 基线逐题明细未持久化、掉题数未知，与后续 run 的个位数百分点差异**不可直接归因**（杠杆实验以自身 run1/run2 为对照锚）。
+- **遗留**：判官层缺陷清单（温度 0.01 非零、max_tokens 溢出掉题）是否值得动刻度，待 T01 归因结论；ragas DiskCache 未启用（测噪声必须禁用——缓存会让 run2 复用 run1 判分，噪声测不出来；未来杠杆实验启用它反而能把判官钉死在未变题上，属另一杠杆）。
+- **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[eval_runner.py](src/observability/evaluation/eval_runner.py)；[pyproject.toml](pyproject.toml)。噪声底数据 `logs/noise_floor/`（gitignored）。承 [[D-028]]（其代价栏预判的「判官非确定」就此定量化）。
 
 ---
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -410,10 +411,15 @@ class EvalRunner:
         for qr in results:
             all_keys.update(qr.metrics.keys())
 
-        # Average each metric
+        # Average each metric. Non-finite values (NaN from a judge failure,
+        # inf) are filtered before the mean — a single NaN would otherwise
+        # poison the entire aggregated metric via sum/len.
         averages: Dict[str, float] = {}
         for key in sorted(all_keys):
-            values = [qr.metrics[key] for qr in results if key in qr.metrics]
+            values = [
+                v for v in (qr.metrics.get(key) for qr in results)
+                if v is not None and math.isfinite(v)
+            ]
             averages[key] = sum(values) / len(values) if values else 0.0
 
         return averages
