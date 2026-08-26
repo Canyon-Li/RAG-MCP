@@ -350,7 +350,8 @@ class TestRagasMetricRouting:
         assert "response" not in call_kwargs
 
     def test_context_precision_skipped_without_reference(self) -> None:
-        """No reference → context_precision returns 0.0 (not crash)."""
+        """No reference → context_precision is EXCLUDED (absent key), not a
+        pseudo-0.0 that would drag the aggregate mean down (T10)."""
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         evaluator = RagasEvaluator.__new__(RagasEvaluator)
@@ -366,8 +367,80 @@ class TestRagasMetricRouting:
                 query="q", contexts=["ctx"], reference=None,
             )
 
-        assert scores["context_precision"] == 0.0
+        assert "context_precision" not in scores
         mock_cp.return_value.score.assert_not_called()
+
+    def test_context_recall_skipped_without_reference(self) -> None:
+        """No reference → context_recall excluded (absent key), symmetric
+        with precision (T10)."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_recall"]
+        evaluator.settings = MagicMock()
+
+        with patch(
+            "ragas.metrics.collections.ContextRecall"
+        ) as mock_crc, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference=None,
+            )
+
+        assert "context_recall" not in scores
+        mock_crc.return_value.score.assert_not_called()
+
+    def test_nan_value_excluded(self) -> None:
+        """NaN result.value → metric excluded, never recorded (one NaN would
+        poison the aggregate mean via sum/len — T10)."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_relevance"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = float("nan")
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.ContextRelevance"
+        ) as mock_cr, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            mock_cr.return_value = fake_metric
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx text"], reference=None,
+            )
+
+        assert "context_relevance" not in scores
+
+    def test_none_value_excluded(self) -> None:
+        """None result.value → metric excluded (not pseudo-0.0) — T10."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_relevance"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = None
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.ContextRelevance"
+        ) as mock_cr, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            mock_cr.return_value = fake_metric
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx text"], reference=None,
+            )
+
+        assert "context_relevance" not in scores
 
     def test_extract_reference_from_ground_truth(self) -> None:
         """_extract_reference reads ground_truth['reference']."""
@@ -441,7 +514,8 @@ class TestContextRecallMetric:
         )
 
     def test_run_ragas_context_recall_without_reference_scores_zero(self) -> None:
-        """Missing reference → warning logged, score 0.0 (symmetric with precision)."""
+        """Missing reference → warning logged, metric EXCLUDED (absent key,
+        not pseudo-0.0) — symmetric with precision (T10)."""
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         evaluator = RagasEvaluator(metrics=["context_recall"])
@@ -456,7 +530,7 @@ class TestContextRecallMetric:
                 query="What is LCU?", contexts=["some context"], reference=None,
             )
 
-        assert scores["context_recall"] == 0.0
+        assert "context_recall" not in scores
         MockContextRecall.return_value.score.assert_not_called()
 
 

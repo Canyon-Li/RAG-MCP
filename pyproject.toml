@@ -33,7 +33,7 @@ dependencies = [
     "python-docx>=1.1.0",  # J2: WordLoader fallback text extraction (and test fixtures)
     "pdfplumber>=0.10.0",  # K4′: PdfTableParser native table extraction
     "streamlit>=1.30.0",
-    "ragas>=0.1.0",
+    "ragas==0.4.3",  # T10 gauge calibration: minor versions break scoring APIs; judge metrics are version-sensitive
     "datasets>=2.0.0",
     # Runtime providers & parsers — previously only survived via transitive deps
     "openai>=1.0",  # embedding/vision providers (OpenAIEmbedding, OpenAIVisionLLM) + ragas
