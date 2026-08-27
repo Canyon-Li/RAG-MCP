@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -88,6 +89,15 @@ def parse_args() -> argparse.Namespace:
             "record every run writes unless this flag is given)."
         ),
     )
+    parser.add_argument(
+        "--no-judge-cache",
+        action="store_true",
+        help=(
+            "Disable the judge LLM disk cache (default: on). Fresh-sample "
+            "runs — e.g. the final verification gate's 3 independent runs — "
+            "must replay nothing."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -101,6 +111,12 @@ def main() -> int:
     load_dotenv()
 
     args = parse_args()
+
+    # T11: opt out of the judge disk cache BEFORE the evaluator is created
+    # (it reads RAGAS_JUDGE_CACHE at wrapper-build time). Fresh-sample runs
+    # must replay nothing.
+    if args.no_judge_cache:
+        os.environ["RAGAS_JUDGE_CACHE"] = "0"
 
     try:
         from src.core.settings import load_settings

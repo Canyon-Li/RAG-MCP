@@ -236,9 +236,10 @@ class TestRagasOllamaJudge:
         """_build_wrappers with ollama provider creates AsyncOpenAI with ollama base_url."""
         import sys as _sys
 
-        # Force ollama branch
+        # Force ollama branch; cache off so no real DiskCacheBackend is built
         monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "ollama")
         monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
 
         # Mock at the source modules — _build_wrappers imports these names
         # function-locally (from openai / ragas.llms), so module-attribute
@@ -543,6 +544,8 @@ class TestBuildWrappersDeepseekBranch:
         monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
         monkeypatch.setenv("RAGAS_JUDGE_MODEL", "deepseek-v4-flash")
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+        # T11: cache off — this test pins the exact llm_factory kwargs
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
 
         # Bypass __init__ (which calls _import_ragas) and set a MagicMock
         # settings so the `settings is None` guard passes.
@@ -561,7 +564,7 @@ class TestBuildWrappersDeepseekBranch:
         assert kwargs["base_url"] == "https://api.deepseek.com"
         mock_factory.assert_called_once_with(
             "deepseek-v4-flash", client=mock_client_cls.return_value,
-            max_tokens=8192,
+            max_tokens=8192, cache=None,
         )
         # embeddings 清理后返回单值 llm
         assert result is mock_factory.return_value
@@ -570,6 +573,7 @@ class TestBuildWrappersDeepseekBranch:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
         monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
 
         evaluator = RagasEvaluator.__new__(RagasEvaluator)
@@ -584,6 +588,7 @@ class TestBuildWrappersDeepseekBranch:
         monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
         monkeypatch.setenv("RAGAS_JUDGE_BASE_URL", "https://api.deepseek.com/v1")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
 
         evaluator = RagasEvaluator.__new__(RagasEvaluator)
         evaluator.settings = MagicMock()
@@ -601,6 +606,7 @@ class TestBuildWrappersDeepseekBranch:
 
         monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
 
         evaluator = RagasEvaluator.__new__(RagasEvaluator)
         evaluator.settings = MagicMock()
@@ -609,3 +615,76 @@ class TestBuildWrappersDeepseekBranch:
             result = evaluator._build_wrappers()
 
         assert result is mock_factory.return_value
+
+
+class TestJudgeDiskCache:
+    """T11: judge disk cache — default on, env off-switch, llm_factory wiring.
+
+    The cache replays exact-match judge calls (same prompt + model params +
+    response model) at zero cost/noise; only retrieval-changed questions get
+    re-judged. Fresh-sample runs (final gate) must disable it.
+    """
+
+    def test_cache_default_on_returns_backend(self, monkeypatch, tmp_path) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.delenv("RAGAS_JUDGE_CACHE", raising=False)
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE_DIR", str(tmp_path / "jc"))
+
+        cache = RagasEvaluator._resolve_judge_cache()
+
+        assert cache is not None
+        # DiskCacheBackend wraps a diskcache.Cache
+        assert hasattr(cache, "cache")
+
+    def test_cache_respects_custom_dir(self, monkeypatch, tmp_path) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE_DIR", str(tmp_path / "custom"))
+
+        cache = RagasEvaluator._resolve_judge_cache()
+
+        assert cache is not None
+        assert str(tmp_path / "custom") in str(getattr(cache.cache, "directory", ""))
+
+    @pytest.mark.parametrize("off", ["0", "false", "off", "no"])
+    def test_cache_disabled_by_env(self, monkeypatch, off) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", off)
+
+        assert RagasEvaluator._resolve_judge_cache() is None
+
+    def test_build_wrappers_passes_cache_when_on(self, monkeypatch, tmp_path) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+        monkeypatch.delenv("RAGAS_JUDGE_CACHE", raising=False)
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE_DIR", str(tmp_path / "jc"))
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        with patch("ragas.llms.llm_factory") as mock_factory, \
+             patch("openai.AsyncOpenAI") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
+            evaluator._build_wrappers()
+
+        assert mock_factory.call_args.kwargs.get("cache") is not None
+
+    def test_build_wrappers_cache_none_when_off(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        with patch("ragas.llms.llm_factory") as mock_factory, \
+             patch("openai.AsyncOpenAI"):
+            evaluator._build_wrappers()
+
+        assert mock_factory.call_args.kwargs.get("cache") is None
