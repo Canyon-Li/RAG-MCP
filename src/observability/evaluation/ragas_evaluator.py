@@ -37,6 +37,7 @@ except ModuleNotFoundError:  # pragma: no cover
 import logging
 import math
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -120,6 +121,45 @@ class RagasEvaluator(BaseEvaluator):
         if env_url.endswith("/v1"):
             return env_url
         return f"{env_url}/v1"
+
+    # T11: judge disk cache lives under gitignored data/ — NOT ragas's
+    # default .cache/ (that would dirty the repo root).
+    _DEFAULT_JUDGE_CACHE_DIR = (
+        Path(__file__).resolve().parents[3] / "data" / "eval_judge_cache"
+    )
+
+    @classmethod
+    def _resolve_judge_cache(cls) -> Any | None:
+        """Disk cache for judge LLM calls (exact-match replay, T11).
+
+        Re-running an eval with unchanged (query, contexts, reference)
+        replays the previous verdict from disk — zero API cost, zero
+        re-roll noise; only questions whose retrieval actually changed get
+        re-judged. Turn OFF for fresh-sample runs (the final gate's 3
+        independent runs must replay nothing): RAGAS_JUDGE_CACHE=0 or
+        scripts/evaluate.py --no-judge-cache.
+
+        Boundaries: the cache removes re-sampling variance, NOT judge
+        bias; the cache key includes model params (temperature /
+        max_tokens), so changing judge params auto-invalidates; failed
+        judge calls (e.g. max_tokens overflow drops) are not cached.
+        """
+        if os.environ.get("RAGAS_JUDGE_CACHE", "1").strip().lower() in {
+            "0", "false", "off", "no",
+        }:
+            return None
+        try:
+            from ragas.cache import DiskCacheBackend
+        except ImportError:  # pragma: no cover — diskcache ships with ragas
+            logger.warning(
+                "ragas.cache.DiskCacheBackend unavailable; "
+                "judge calls run uncached."
+            )
+            return None
+        cache_dir = os.environ.get("RAGAS_JUDGE_CACHE_DIR") or str(
+            cls._DEFAULT_JUDGE_CACHE_DIR
+        )
+        return DiskCacheBackend(cache_dir=cache_dir)
 
     def __init__(
         self,
@@ -326,6 +366,9 @@ class RagasEvaluator(BaseEvaluator):
         if self.settings is None:
             raise ValueError("Settings required to create LLM for Ragas evaluation")
 
+        # T11: judge disk cache — see _resolve_judge_cache for boundaries.
+        cache = self._resolve_judge_cache()
+
         judge_provider = self._resolve_judge_provider()
         if judge_provider == "ollama":
             base_url = self._resolve_ollama_base_url()
@@ -337,7 +380,10 @@ class RagasEvaluator(BaseEvaluator):
             client = AsyncOpenAI(
                 base_url=base_url, api_key="ollama", http_client=http_client,
             )
-            llm = llm_factory(self._resolve_judge_model(), client=client, max_tokens=8192)
+            llm = llm_factory(
+                self._resolve_judge_model(), client=client, max_tokens=8192,
+                cache=cache,
+            )
             return llm
 
         if judge_provider == "deepseek":
@@ -358,6 +404,7 @@ class RagasEvaluator(BaseEvaluator):
             client = AsyncOpenAI(base_url=base_url, api_key=api_key)
             llm = llm_factory(
                 self._resolve_judge_model(), client=client, max_tokens=8192,
+                cache=cache,
             )
             return llm
 
@@ -389,7 +436,9 @@ class RagasEvaluator(BaseEvaluator):
                 "Supported: azure, openai"
             )
 
-        llm = llm_factory(llm_cfg.model, client=llm_client, max_tokens=8192)
+        llm = llm_factory(
+            llm_cfg.model, client=llm_client, max_tokens=8192, cache=cache
+        )
 
         return llm
 

@@ -44,6 +44,7 @@
 | D-027 | 2026-08-14 | DoclingParser 分批转换（每批新 converter，默认批 8）修长文档 std::bad_alloc 静默缺页 | 采纳 | feat/eval-speedup |
 | D-028 | 2026-08-17 | 评估体系 v2：新增 context_recall + judge 切 DeepSeek（env 驱动 + dotenv）；五指标全量基线落地 | 采纳 | feat/eval-speedup |
 | D-029 | 2026-08-27 | 评测量具校准：锁 ragas==0.4.3 + 伪 0/NaN 剔除 + 判官噪声底实测 6.4pt/4.9pt（判读纪律升级为 3 次取中位数） | 采纳 | fix/eval-gauge-calibration |
+| D-030 | 2026-08-27 | 判官 DiskCache：判分 exact-match 缓存（默认开；终验 3 次全新跑必须 `--no-judge-cache`） | 采纳 | feat/eval-judge-cache |
 
 ---
 
@@ -125,6 +126,16 @@
 - **代价 / 纪律**：判读规则升级——同配置跑 **3 次**取**中位数**为代表值，差异 < 噪声底（precision 6.5pt / recall 5pt）的改动视为无效果；达标判定 = 中位数过线且 3 次中至少 2 次过线；掉题 >3/23 的 run 作废重跑。08-16 基线逐题明细未持久化、掉题数未知，与后续 run 的个位数百分点差异**不可直接归因**（杠杆实验以自身 run1/run2 为对照锚）。
 - **遗留**：判官层缺陷清单（温度 0.01 非零、max_tokens 溢出掉题）是否值得动刻度，待 T01 归因结论；ragas DiskCache 未启用（测噪声必须禁用——缓存会让 run2 复用 run1 判分，噪声测不出来；未来杠杆实验启用它反而能把判官钉死在未变题上，属另一杠杆）。
 - **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[eval_runner.py](src/observability/evaluation/eval_runner.py)；[pyproject.toml](pyproject.toml)。噪声底数据 `logs/noise_floor/`（gitignored）。承 [[D-028]]（其代价栏预判的「判官非确定」就此定量化）。
+
+---
+
+### D-030 判官 DiskCache：判分 exact-match 缓存（日常单跑成立，终验可关）
+
+- **碰到**：D-029 把达标纪律升级为「3 次 run 取中位数」后，每个杠杆的实验成本×3，且每次 run 都对**未变的题**重新掷判官骰子——既花钱又把已量出的噪声底（precision 6.4pt）重新注入每次对比。用户明确成本诉求：「能不能只跑一次」。
+- **行业做法**：LLM-as-judge 非确定性是公认问题，解法四类（exact-match 缓存 / 温度→0 / 多采样聚合 / 粗粒度判决）。ragas 官方一等公民支持缓存：`DiskCacheBackend` + `llm_factory(..., cache=)`，key 含 prompt + 模型参数（温度/max_tokens）+ 响应模型，官方把 Reproducibility 列为卖点。调研存档 `.wayfinder/research/llm-judge-stability-industry.md`。
+- **我的解法**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py) `_resolve_judge_cache()` —— 默认**开**，`RAGAS_JUDGE_CACHE=0/false/off/no` 关；目录 `data/eval_judge_cache/`（gitignored；不用 ragas 默认 `.cache/` 脏 repo root），`RAGAS_JUDGE_CACHE_DIR` 可覆盖；三个判官分支（ollama / deepseek / azure-openai）的 `llm_factory` 统一挂 `cache=`。[evaluate.py](scripts/evaluate.py) 加 `--no-judge-cache` 旗标（映射到 env，在 evaluator 构造前生效）。`diskcache>=5.6.3` 是 ragas 声明依赖，零新增 pyproject 条目。**纪律联动**：日常杠杆实验开缓存（未变题回放 = 零成本零重掷噪声，只有检索结果真变了的题 miss）；终验（3 次全新采样取中位数）必须关。
+- **为什么不用别的**：温度→0 不根治（arXiv 2412.12509：确定性设置下单样本仍可误导）且属换刻度需重锚定；多采样/判官集成直接放大成本，与诉求相反。**边界要认清**：缓存消除的是重复采样**方差**，不是判官**偏差**——所以保留一键关而不是无条件回放；失败调用（max_tokens 溢出掉题）不进缓存，结构性掉题（D-029 发现的第三种量具缺陷）不靠它治。
+- **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[evaluate.py](scripts/evaluate.py)。承 [[D-029]]（其遗留栏点名的「DiskCache 未启用，属候选杠杆」就此落地）。
 
 ---
 
