@@ -214,6 +214,31 @@ class TestEvalRunnerAggregation:
         assert avg["hit_rate"] == 1.0
         assert avg["faithfulness"] == 0.9
 
+    def test_aggregate_filters_nan(self) -> None:
+        """A single NaN must not poison the mean — it's excluded, and the
+        remaining finite values still average (T10 gauge calibration)."""
+        results = [
+            QueryResult(query="q1", metrics={"context_recall": 0.5}),
+            QueryResult(query="q2", metrics={"context_recall": float("nan")}),
+            QueryResult(query="q3", metrics={"context_recall": 1.0}),
+        ]
+
+        avg = EvalRunner._aggregate_metrics(results)
+
+        assert avg["context_recall"] == pytest.approx(0.75)
+
+    def test_aggregate_filters_none_and_inf(self) -> None:
+        """None / inf values are excluded from the mean as well."""
+        results = [
+            QueryResult(query="q1", metrics={"mrr": 0.4}),
+            QueryResult(query="q2", metrics={"mrr": None}),
+            QueryResult(query="q3", metrics={"mrr": float("inf")}),
+        ]
+
+        avg = EvalRunner._aggregate_metrics(results)
+
+        assert avg["mrr"] == pytest.approx(0.4)
+
 
 # ── Tests: Golden test set fixture ────────────────────────────────
 

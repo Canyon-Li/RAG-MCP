@@ -35,6 +35,7 @@ except ModuleNotFoundError:  # pragma: no cover
         _sys.modules["langchain_community.chat_models.vertexai"] = _stub
 
 import logging
+import math
 import os
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -245,13 +246,14 @@ class RagasEvaluator(BaseEvaluator):
                 m = ContextPrecision(llm=llm)
                 # ContextPrecisionWithReference ranks retrieved contexts by
                 # whether each is needed to answer the query, judged against the
-                # reference answer. Requires a non-empty reference.
+                # reference answer. Requires a non-empty reference. Missing
+                # reference → skip the metric entirely (absent key) — a recorded
+                # 0.0 is a pseudo-zero that drags the aggregate mean down.
                 if not reference:
                     logger.warning(
                         "context_precision skipped: no reference answer provided "
                         "(golden set missing 'reference')."
                     )
-                    scores[metric_name] = 0.0
                     continue
                 result = m.score(
                     user_input=query,
@@ -262,13 +264,12 @@ class RagasEvaluator(BaseEvaluator):
                 m = ContextRecall(llm=llm)
                 # ContextRecall decomposes the reference into atomic claims
                 # and scores the fraction supported by the retrieved contexts.
-                # Symmetric with precision: missing reference → warn + 0.0.
+                # Symmetric with precision: missing reference → warn + skip.
                 if not reference:
                     logger.warning(
                         "context_recall skipped: no reference answer provided "
                         "(golden set missing 'reference')."
                     )
-                    scores[metric_name] = 0.0
                     continue
                 result = m.score(
                     user_input=query,
@@ -278,7 +279,19 @@ class RagasEvaluator(BaseEvaluator):
             else:
                 continue
 
-            scores[metric_name] = float(result.value) if result.value is not None else 0.0
+            # result.value can be None (metric produced nothing) or NaN/inf
+            # (e.g. 0/0 inside ragas when no statements parse). Either way the
+            # metric is excluded (absent key), never recorded as 0.0 — one NaN
+            # through sum/len would poison the whole aggregated metric.
+            raw = result.value
+            if raw is None:
+                logger.warning("%s produced no value; excluded from metrics.", metric_name)
+                continue
+            value = float(raw)
+            if not math.isfinite(value):
+                logger.warning("%s produced non-finite value %s; excluded.", metric_name, raw)
+                continue
+            scores[metric_name] = value
 
         return scores
 
