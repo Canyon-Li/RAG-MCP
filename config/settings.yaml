@@ -35,7 +35,7 @@ embedding:
 vision_llm:
   enabled: true  # 默认启用（D-020）；ImageCaptioner 据此决定是否调 Vision LLM
   provider: "ollama"  # 本地 Vision LLM；决策见 D-020
-  model: "llava-phi3:3.8b"
+  model: "qwen2.5vl-3b:latest"  # D-020 原为 llava-phi3:3.8b；本机未装，换成本地已有标签
   azure_endpoint: ""
   deployment_name: ""
   api_version: ""

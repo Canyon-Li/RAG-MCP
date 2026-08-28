@@ -1,18 +1,18 @@
 <#
 .SYNOPSIS
-  Switch ollama's resident models to the INGEST set (llava-phi3 + nomic-embed-text).
+  Switch ollama's resident models to the INGEST set (qwen2.5vl + nomic-embed-text).
 
 .DESCRIPTION
   Ingest needs only:
-    - llava-phi3:3.8b  (Vision — ImageCaptioner; only when vision_llm.enabled)
+    - qwen2.5vl-3b:latest  (Vision — ImageCaptioner; only when vision_llm.enabled)
     - nomic-embed-text (dense embedding for the DenseEncoder)
   granite4.1:8b is constructed by chunk_refiner / metadata_enricher but NEVER
   called (both have use_llm=false — rule-based fallback runs instead), and
   llama3 is the eval judge. Neither belongs in RAM during ingest.
 
   This script:
-    1. Unloads llama3 + granite (free RAM for llava's image captioning).
-    2. Pre-warms llava + nomic with a 30m keep-alive.
+    1. Unloads granite (free RAM for qwen2.5vl's image captioning).
+    2. Pre-warms qwen2.5vl + nomic with a 30m keep-alive.
 
   Run this BEFORE `python scripts/ingest.py ...`. Non-destructive.
 
@@ -44,7 +44,7 @@ Write-Host "Switching to INGEST mode..." -ForegroundColor Cyan
 # error disappears while output is still silenced.
 
 # 1. Unload models ingest doesn't use.
-foreach ($m in @("llama3", "granite4.1:8b")) {
+foreach ($m in @("granite4.1:8b")) {
     cmd /c "ollama stop $m >nul 2>nul"
     Write-Host "  unloaded: $m" -ForegroundColor DarkGray
 }
@@ -52,7 +52,7 @@ foreach ($m in @("llama3", "granite4.1:8b")) {
 # 2. Pre-warm + keep resident. Feeding an empty line to `ollama run` via the
 #    cmd pipe makes it return immediately (no interactive prompt) while leaving
 #    the model loaded in RAM.
-foreach ($m in @("llava-phi3:3.8b", "nomic-embed-text")) {
+foreach ($m in @("qwen2.5vl-3b:latest", "nomic-embed-text")) {
     cmd /c "echo.|ollama run $m --keepalive 30m >nul 2>nul"
     Write-Host "  resident: $m  (keepalive 30m)" -ForegroundColor Green
 }
