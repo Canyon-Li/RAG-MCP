@@ -27,7 +27,7 @@ dependencies = [
     "pyyaml>=6.0",
     "langchain-text-splitters>=0.3.0",
     "chromadb>=0.4.0",
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",  # mcp 2.x renames camelCase fields (isError→is_error) and drops Server.list_tools; code/tests target 1.x
     "jieba>=0.42",
     "markitdown[pdf]>=0.1.0",
     "python-docx>=1.1.0",  # J2: WordLoader fallback text extraction (and test fixtures)
@@ -55,6 +55,10 @@ dev = [
 cross-encoder = [
     # CrossEncoderReranker — heavy, pulls torch; install via ".[cross-encoder]"
     "sentence-transformers>=2.2.0",
+]
+docling = [
+    # DoclingParser / DoclingVlmParser — default parser since D-011, heavy (torch); install via ".[docling]"
+    "docling>=2.0",
 ]
 
 [project.scripts]

@@ -474,7 +474,11 @@ class TestServerProtocolHandlerIntegration:
             handler=search_handler,
         )
 
-        server = create_mcp_server("test-server", "1.0.0", protocol_handler=handler)
+        # register_tools=False: handler already carries query_knowledge_hub,
+        # and _register_default_tools would raise on the duplicate name
+        server = create_mcp_server(
+            "test-server", "1.0.0", protocol_handler=handler, register_tools=False
+        )
 
         # Verify tools are accessible through protocol handler
         tools = handler.get_tool_schemas()

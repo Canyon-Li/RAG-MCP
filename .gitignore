@@ -128,3 +128,6 @@ tests/fixtures/eval_docs/*.pdf
 # One-off analysis scratch / other tools' session memory
 output.txt
 scripts/_pdf_text/
+
+# mattpocock scratch
+.wayfinder/
