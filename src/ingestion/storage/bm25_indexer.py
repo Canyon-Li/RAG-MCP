@@ -326,7 +326,10 @@ class BM25Indexer:
             collection: Collection name.
             doc_id: If provided, remove existing postings whose chunk_id
                 starts with this prefix before adding new ones (idempotent
-                re-ingestion).
+                re-ingestion).  This must be the chunk-ID *prefix* the
+                upserter derives from the source path (e.g.
+                ``sha256(source_path)[:8]``) — a Document.id (content
+                hash) never matches any chunk_id and removes nothing.
             trace: Optional TraceContext.
         """
         if not term_stats:

@@ -45,6 +45,7 @@
 | D-028 | 2026-08-17 | 评估体系 v2：新增 context_recall + judge 切 DeepSeek（env 驱动 + dotenv）；五指标全量基线落地 | 采纳 | feat/eval-speedup |
 | D-029 | 2026-08-27 | 评测量具校准：锁 ragas==0.4.3 + 伪 0/NaN 剔除 + 判官噪声底实测 6.4pt/4.9pt（判读纪律升级为 3 次取中位数） | 采纳 | fix/eval-gauge-calibration |
 | D-030 | 2026-08-27 | 判官 DiskCache：判分 exact-match 缓存（默认开；终验 3 次全新跑必须 `--no-judge-cache`） | 采纳 | feat/eval-judge-cache |
+| D-031 | 2026-08-29 | BM25 重灌幂等：add_documents 的 doc_id 换 chunk_id 前缀单一真相源（修 T13 实测的 num_docs 幻影根因） | 采纳 | fix/bm25-reingest-prefix |
 
 ---
 
@@ -136,6 +137,14 @@
 - **我的解法**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py) `_resolve_judge_cache()` —— 默认**开**，`RAGAS_JUDGE_CACHE=0/false/off/no` 关；目录 `data/eval_judge_cache/`（gitignored；不用 ragas 默认 `.cache/` 脏 repo root），`RAGAS_JUDGE_CACHE_DIR` 可覆盖；三个判官分支（ollama / deepseek / azure-openai）的 `llm_factory` 统一挂 `cache=`。[evaluate.py](scripts/evaluate.py) 加 `--no-judge-cache` 旗标（映射到 env，在 evaluator 构造前生效）。`diskcache>=5.6.3` 是 ragas 声明依赖，零新增 pyproject 条目。**纪律联动**：日常杠杆实验开缓存（未变题回放 = 零成本零重掷噪声，只有检索结果真变了的题 miss）；终验（3 次全新采样取中位数）必须关。
 - **为什么不用别的**：温度→0 不根治（arXiv 2412.12509：确定性设置下单样本仍可误导）且属换刻度需重锚定；多采样/判官集成直接放大成本，与诉求相反。**边界要认清**：缓存消除的是重复采样**方差**，不是判官**偏差**——所以保留一键关而不是无条件回放；失败调用（max_tokens 溢出掉题）不进缓存，结构性掉题（D-029 发现的第三种量具缺陷）不靠它治。
 - **关联**：[ragas_evaluator.py](src/observability/evaluation/ragas_evaluator.py)；[evaluate.py](scripts/evaluate.py)。承 [[D-029]]（其遗留栏点名的「DiskCache 未启用，属候选杠杆」就此落地）。
+
+### D-031 BM25 重灌幂等：doc_id 换 chunk_id 前缀单一真相源（修重灌暗坑根因）
+
+- **碰到**：[T13](../.wayfinder/tickets/T13-data-repair-and-anchor.md) 数据修复时实测发现重灌暗坑家族——BM25 `num_docs` 幻影累计（597 vs 真实 571）、文本未变 chunk 跨重灌 posting 双计分、旧版本 chunk 常驻，只能全量重建索引止血。代码级根因：pipeline Stage 6b 把 `document.id`（`doc_`+**内容**哈希 16 位，docling 生成）当 `doc_id` 传给 `add_documents`，而 `remove_document` 按 `chunk_id.startswith(doc_id)` 匹配、chunk_id 前缀是 sha256(**路径**)[:8]——两类哈希**永不匹配**，重灌时旧行从不删除。删除靠前缀匹配这个约定此前只活在两处 docstring 里，无测试钉住。
+- **行业做法**：向量库（Chroma/Qdrant/LangChain vectorstore 接口）的 upsert 原生按 id 覆盖，幂等不需要额外删除步骤；自建 JSON 倒排索引（BM25 JSON）没有文档级 replace 原语，幂等只能靠「删除键 == 写入键前缀」的约定维持——主流方案里没有直接等价物可抄，风险恰在约定无强制力。本仓库 Chroma 侧有 `test_vector_upserter_idempotency` 钉住，BM25 侧此前是空缺。
+- **我的解法**：前缀计算收敛为 `VectorUpserter.chunk_id_prefix(source_path)` 单一真相源（`_generate_chunk_id` 与 pipeline 6b 共用同一函数，杜绝双写漂移）；pipeline 传 `doc_id=chunk_id_prefix(chunks[0].metadata["source_path"])`；新增重灌幂等回归单测 [test_pipeline_bm25_reingest.py](tests/unit/test_pipeline_bm25_reingest.py)——同路径连灌两次、第二次内容漂移，断言 unique 精确替换（比「不涨」更严）、`num_docs == unique`、无重复 posting、旧版本 chunk 全消失。数据不回填（evaluation 库 T13 已修好；`t13_repair.py` 保留应急）。
+- **为什么不用别的**：① 从 `vector_ids` 提取字符串公共前缀——依赖 ID 格式（分隔符/位数）的字符串结构知识，格式一变即静默失效；重算复用生成函数本身，格式知识只存在一处。② 改 `add_documents` 直接收 chunks 或维护 doc→chunk 映射表——改动面远超防御性修复。③ 同族 bug（`document_manager.delete_document` 同样把内容哈希传给 `remove_document`，删除路径永不命中）**有意不在本单修**——重灌与显式删除是不同验证面，拆 [T17](../.wayfinder/tickets/T17-bm25-delete-prefix-bug.md)。④ 路径哈希跨机/跨目录漂移不解决——改它 = 换全套 id 方案，代价远超收益（工单边界：本决策只保证「同路径重灌」幂等）。
+- **关联**：[pipeline.py](src/ingestion/pipeline.py)（6b）；[vector_upserter.py](src/ingestion/storage/vector_upserter.py)（chunk_id_prefix）；[bm25_indexer.py](src/ingestion/storage/bm25_indexer.py)（doc_id 契约 docstring）。根因发现链：[[D-027]]（docling 重解析漂移，同族暗坑第一环）→ T13 → 本条。
 
 ---
 
