@@ -16,6 +16,7 @@ Design Principles:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -305,6 +306,10 @@ class CoreReranker:
                 trace.record_stage("rerank", {
                     "method": self._reranker_type,
                     "provider": self._reranker_type,
+                    # concrete backend identity (e.g. local model path/name);
+                    # method/provider stay stable category labels for the
+                    # dashboard, model carries the "which one" answer
+                    "model": str(getattr(self.settings.rerank, "model", "") or ""),
                     "input_count": len(candidates),
                     "output_count": len(final_results),
                     "chunks": [
@@ -364,17 +369,48 @@ class CoreReranker:
         return self.config.enabled and not isinstance(self._reranker, NoneReranker)
 
 
+# Process-wide memo: at most one live backend per distinct rerank config
+# (the cross-encoder model is ~2GB — reloading it per caller would also
+# re-trigger heavy imports inside worker threads).
+_CACHED_CORE_RERANKERS: dict[tuple, CoreReranker] = {}
+_CORE_RERANKER_CACHE_LOCK = threading.Lock()
+
+
 def create_core_reranker(
     settings: Settings,
     reranker: Optional[BaseReranker] = None,
 ) -> CoreReranker:
     """Factory function to create a CoreReranker instance.
-    
+
+    Memoized on the rerank config semantics (enabled/provider/model): the
+    MCP server preloads the cross-encoder model in the main thread to keep
+    heavy imports off worker threads (import-lock discipline), and the query
+    tool reuses that exact instance instead of paying a second ~2GB model
+    load at first query. An explicit ``reranker`` argument bypasses the
+    cache entirely (test injection).
+
     Args:
         settings: Application settings.
         reranker: Optional reranker backend override.
-        
+
     Returns:
         Configured CoreReranker instance.
     """
-    return CoreReranker(settings=settings, reranker=reranker)
+    if reranker is not None:
+        return CoreReranker(settings=settings, reranker=reranker)
+
+    cache_key = (
+        bool(settings.rerank.enabled),
+        str(settings.rerank.provider),
+        str(settings.rerank.model),
+    )
+    # Lock-guarded double-check: the MCP server warms the cross-encoder in a
+    # background thread at startup while tool calls may arrive concurrently —
+    # exactly one thread may construct (and load the ~2GB model); the rest
+    # wait here without importing anything (import-lock discipline).
+    with _CORE_RERANKER_CACHE_LOCK:
+        cached = _CACHED_CORE_RERANKERS.get(cache_key)
+        if cached is None:
+            cached = CoreReranker(settings=settings)
+            _CACHED_CORE_RERANKERS[cache_key] = cached
+        return cached

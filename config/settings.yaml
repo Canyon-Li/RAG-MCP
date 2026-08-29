@@ -61,13 +61,13 @@ retrieval:
   rrf_k: 60
 
 # =============================================================================
-# Rerank Configuration (disabled per user choice)
+# Rerank Configuration (T15: cross-encoder enabled)
 # =============================================================================
 rerank:
-  enabled: false
-  provider: "none"
-  model: "none"
-  top_k: 5
+  enabled: true  # T15: bge-reranker-v2-m3 重排 RRF 融合候选（C 桶机制正面攻）
+  provider: "cross_encoder"
+  model: "D:/models/bge-reranker-v2-m3"  # ModelScope 本地快照（HF 直连/hf-mirror 均被断，见 T15 Resolution）；CrossEncoder 走本地路径零联网
+  top_k: 5  # 仅 MCP 查询路径默认深度；eval 侧显式传 top_k=10（2× 候选→重排→截断），不混变量
 
 # =============================================================================
 # Evaluation Configuration

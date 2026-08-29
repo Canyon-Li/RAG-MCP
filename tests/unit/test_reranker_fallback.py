@@ -486,3 +486,72 @@ class TestCoreRerankerProperties:
         )
         
         assert reranker.is_enabled is False
+
+
+# =============================================================================
+# Test: Factory Function Caching (T15)
+# =============================================================================
+
+class TestCreateCoreRerankerCaching:
+    """create_core_reranker memoizes on the rerank config semantics.
+
+    The MCP server preloads the cross-encoder model in the main thread
+    (import-lock discipline); the query tool must reuse that exact instance
+    instead of paying a second ~2GB model load inside a worker thread at
+    first query. The cache key is (enabled, provider, model); an explicit
+    reranker argument bypasses the cache entirely (used by tests).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_reranker_cache(self):
+        """Isolate tests from the process-wide memo."""
+        from src.core.query_engine.reranker import _CACHED_CORE_RERANKERS
+
+        _CACHED_CORE_RERANKERS.clear()
+        yield
+        _CACHED_CORE_RERANKERS.clear()
+
+    def test_same_config_returns_same_instance(self, mock_settings):
+        """Two calls with identical rerank config share one CoreReranker."""
+        mock_settings.rerank.enabled = True
+        mock_settings.rerank.provider = "cross_encoder"
+        mock_settings.rerank.model = "some-model"
+
+        with patch("src.core.query_engine.reranker.CoreReranker") as mock_cls:
+            mock_cls.side_effect = lambda *a, **k: MagicMock()
+            first = create_core_reranker(mock_settings)
+            second = create_core_reranker(mock_settings)
+
+        assert first is second
+        mock_cls.assert_called_once()
+
+    def test_different_config_returns_new_instance(self, mock_settings):
+        """A changed rerank model invalidates the cached instance."""
+        mock_settings.rerank.enabled = True
+        mock_settings.rerank.provider = "cross_encoder"
+        mock_settings.rerank.model = "model-a"
+
+        with patch("src.core.query_engine.reranker.CoreReranker") as mock_cls:
+            mock_cls.side_effect = lambda *a, **k: MagicMock()
+            first = create_core_reranker(mock_settings)
+            mock_settings.rerank.model = "model-b"
+            second = create_core_reranker(mock_settings)
+
+        assert first is not second
+        assert mock_cls.call_count == 2
+
+    def test_explicit_reranker_bypasses_cache(self, mock_settings):
+        """Explicit backend injection must never hit or populate the cache."""
+        mock_settings.rerank.enabled = True
+        mock_settings.rerank.provider = "cross_encoder"
+        mock_settings.rerank.model = "some-model"
+
+        fake = FakeReranker()
+        injected = create_core_reranker(mock_settings, reranker=fake)
+        assert injected._reranker is fake
+
+        # cache untouched: a subsequent settings call still builds fresh
+        with patch("src.core.query_engine.reranker.CoreReranker") as mock_cls:
+            mock_cls.side_effect = lambda *a, **k: MagicMock()
+            create_core_reranker(mock_settings)
+        mock_cls.assert_called_once()

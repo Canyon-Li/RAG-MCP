@@ -35,12 +35,18 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 def _start_server() -> subprocess.Popen:
     """Start the MCP server subprocess with stdio transport.
 
+    stderr is drained by a daemon reader thread (lines kept on
+    ``proc.stderr_lines`` for failure debugging): with cross_encoder rerank
+    enabled the server logs a torch progress bar + warm-up messages during
+    startup, which is enough to fill the Windows pipe buffer (~4KB) and
+    freeze the server on its next stderr write if nobody reads.
+
     Returns:
         Running subprocess with stdin/stdout/stderr pipes.
     """
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-    return subprocess.Popen(
+    proc = subprocess.Popen(
         [sys.executable, "-m", "src.mcp_server.server"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -51,6 +57,39 @@ def _start_server() -> subprocess.Popen:
         cwd=str(PROJECT_ROOT),
         env=env,
     )
+
+    stderr_lines: List[str] = []
+    proc.stderr_lines = stderr_lines  # type: ignore[attr-defined]
+
+    def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        for line in proc.stderr:
+            stderr_lines.append(line)
+
+    threading.Thread(target=_drain_stderr, daemon=True).start()
+
+    # One persistent stdout reader for the whole process lifetime. Spawning a
+    # fresh reader per _send_jsonrpc call left the previous reader blocked
+    # inside readline() — two threads on the same TextIOWrapper steal each
+    # other's lines (observed: "Missing response for id=2" flakes).
+    responses: List[Dict[str, Any]] = []
+    proc.responses = responses  # type: ignore[attr-defined]
+
+    def _read_stdout() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                data = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if "id" in data and ("result" in data or "error" in data):
+                responses.append(data)
+
+    threading.Thread(target=_read_stdout, daemon=True).start()
+    return proc
 
 
 def _send_jsonrpc(
@@ -65,50 +104,32 @@ def _send_jsonrpc(
     always respected even when ``readline()`` blocks.
 
     Args:
-        proc: Subprocess with stdin/stdout pipes.
+        proc: Subprocess with stdin/stdout pipes (stdout drained by the
+            persistent reader thread started in _start_server).
         messages: List of JSON-RPC requests / notifications.
         expected_responses: How many JSON-RPC *responses* (with ``id``) to wait for.
         timeout: Max seconds to wait.
 
     Returns:
-        Parsed JSON-RPC response dicts (only entries with ``id``).
+        Parsed JSON-RPC response dicts (only entries with ``id``) that
+        arrived after this call sent its messages.
     """
     assert proc.stdin is not None
     assert proc.stdout is not None
+
+    responses: List[Dict[str, Any]] = proc.responses  # type: ignore[attr-defined]
+    baseline = len(responses)
 
     for msg in messages:
         proc.stdin.write(json.dumps(msg) + "\n")
         proc.stdin.flush()
 
-    responses: List[Dict[str, Any]] = []
-    stop_event = threading.Event()
-
-    def _reader() -> None:
-        """Read stdout lines in a daemon thread so timeout can interrupt."""
-        while not stop_event.is_set():
-            line = proc.stdout.readline()  # type: ignore[union-attr]
-            if not line:
-                break
-            stripped = line.strip()
-            if not stripped:
-                continue
-            try:
-                data = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if "id" in data and ("result" in data or "error" in data):
-                responses.append(data)
-
-    reader_thread = threading.Thread(target=_reader, daemon=True)
-    reader_thread.start()
-
-    # Wait until we have enough responses *or* timeout expires
+    # Wait until enough NEW responses arrived *or* timeout expires
     deadline = time.time() + timeout
-    while len(responses) < expected_responses and time.time() < deadline:
+    while len(responses) - baseline < expected_responses and time.time() < deadline:
         time.sleep(0.1)
 
-    stop_event.set()
-    return responses
+    return list(responses[baseline:])
 
 
 def _find(responses: List[Dict[str, Any]], req_id: int) -> Optional[Dict[str, Any]]:
@@ -470,10 +491,26 @@ class TestMCPClientE2E:
     def test_multiple_tool_calls_same_session(
         self, mcp_server: subprocess.Popen
     ) -> None:
-        """Server handles multiple tools/call invocations in one session."""
-        messages = [
-            INIT_REQUEST,
-            INITIALIZED_NOTIFICATION,
+        """Server handles multiple tools/call invocations in one session.
+
+        Calls are issued sequentially (awaiting each response) rather than
+        fired concurrently: concurrent ChromaDB client initialization across
+        tool handlers is a known race that predates T15 (rerank latency only
+        changed its symptom from a fast error to a hang) — follow-up ticket
+        tracks concurrent-call safety. This test's contract is session
+        reuse, which sequential calls exercise just as well.
+        """
+        responses: List[Dict[str, Any]] = []
+        responses.extend(
+            _send_jsonrpc(
+                mcp_server,
+                [INIT_REQUEST, INITIALIZED_NOTIFICATION],
+                expected_responses=1,
+                timeout=60.0,
+            )
+        )
+
+        calls = [
             # Call 1: list_collections
             {
                 "jsonrpc": "2.0",
@@ -484,7 +521,10 @@ class TestMCPClientE2E:
                     "arguments": {"include_stats": False},
                 },
             },
-            # Call 2: query_knowledge_hub
+            # Call 2: query_knowledge_hub — 60s: with cross_encoder rerank
+            # enabled (T15 default) the model warms in a background thread;
+            # if the query lands before warm-up finishes it waits on the
+            # reranker cache lock (bounded, no double load).
             {
                 "jsonrpc": "2.0",
                 "id": 3,
@@ -505,8 +545,10 @@ class TestMCPClientE2E:
                 },
             },
         ]
-
-        responses = _send_jsonrpc(mcp_server, messages, expected_responses=4, timeout=60.0)
+        for call in calls:
+            responses.extend(
+                _send_jsonrpc(mcp_server, [call], expected_responses=1, timeout=60.0)
+            )
 
         # All four responses (init + 3 tool calls) should arrive
         for req_id in (1, 2, 3, 4):

@@ -8,7 +8,9 @@ while all logs go to stderr.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
+import threading
 from typing import TYPE_CHECKING
 
 from src.mcp_server.protocol_handler import create_mcp_server
@@ -76,6 +78,49 @@ def _preload_heavy_imports() -> None:
         import src.libs.embedding.embedding_factory  # noqa: F401
         import src.libs.vector_store.vector_store_factory  # noqa: F401
     except ImportError:
+        pass
+
+    # T15: cross_encoder rerank — CrossEncoderReranker lazy-imports the torch
+    # stack inside a tool-handler worker thread, which deadlocks against the
+    # anyio I/O threads on Python's import lock (same shape as chromadb
+    # above). Two-part fix:
+    #   1. import sentence_transformers HERE in the main thread (the package
+    #      import pulls the whole torch stack; ~6s), so worker threads only
+    #      ever hit sys.modules;
+    #   2. load the ~2GB model in a daemon warm thread instead of blocking
+    #      startup — a blocking load delayed the initialize handshake past
+    #      real client timeouts. create_core_reranker memoizes under a lock,
+    #      so an early first query waits for the warm thread's instance
+    #      instead of double-loading.
+    # Skipped entirely when the backend isn't selected.
+    try:
+        from src.core.settings import load_settings
+
+        settings = load_settings()
+        if settings.rerank.provider == "cross_encoder":
+            import sentence_transformers  # noqa: F401
+
+            from src.core.query_engine.reranker import create_core_reranker
+
+            def _warm_cross_encoder() -> None:
+                try:
+                    create_core_reranker(settings)
+                    logging.getLogger(__name__).info(
+                        "cross-encoder reranker warmed (background)"
+                    )
+                except Exception:  # optional extra / model missing — degrade
+                    logging.getLogger(__name__).warning(
+                        "cross-encoder warm-up failed; first query will "
+                        "rerank-fallback per graceful degradation",
+                        exc_info=True,
+                    )
+
+            threading.Thread(
+                target=_warm_cross_encoder, daemon=True, name="warm-cross-encoder"
+            ).start()
+    except Exception:
+        # Optional extra (cross-encoder not installed) or settings problem —
+        # either surfaces later with its own error handling.
         pass
 
 

@@ -178,11 +178,31 @@ def main() -> int:
         except Exception as exc:
             print(f"⚠️  Failed to initialize search (running without retrieval): {exc}")
 
+    # Create reranker when enabled (T15) — EvalRunner._retrieve then takes
+    # 2x candidates and truncates back to top_k, mirroring the MCP query path.
+    # Graceful degradation: on failure, warn and continue without reranking.
+    reranker = None
+    if settings.rerank.enabled:
+        try:
+            from src.core.query_engine.reranker import create_core_reranker
+
+            reranker = create_core_reranker(settings=settings)
+            # effective type: "none" here means the backend silently degraded
+            # (CoreReranker falls back to NoneReranker) — surface it so a
+            # mislabeled rerank-on run is visible in the log.
+            print(
+                f"✅ Reranker: {settings.rerank.provider}/{settings.rerank.model} "
+                f"(effective: {reranker.reranker_type})"
+            )
+        except Exception as exc:
+            print(f"⚠️  Failed to create reranker (continuing without): {exc}", file=sys.stderr)
+
     # Create and run EvalRunner
     runner = EvalRunner(
         settings=settings,
         hybrid_search=hybrid_search,
         evaluator=evaluator,
+        reranker=reranker,
     )
 
     try:

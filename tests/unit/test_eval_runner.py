@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.core.types import RetrievalResult
 from src.libs.evaluator.base_evaluator import BaseEvaluator
 from src.libs.evaluator.custom_evaluator import CustomEvaluator
 from src.observability.evaluation.eval_runner import (
@@ -305,3 +306,53 @@ class TestEvalRunnerSourceGT:
 
         # source_recall should be 1.0 because paperA.pdf was retrieved
         assert report.query_results[0].metrics["source_recall_at_k"] == 1.0
+
+
+class TestEvalRunnerRerankProtocol:
+    """Pin the T15 A/B retrieval protocol: with an enabled reranker,
+    _retrieve takes 2x candidates from hybrid search, reranks, then
+    truncates back to the requested top_k (context depth stays constant,
+    so a rerank on/off comparison isolates rerank quality alone)."""
+
+    def _make_results(self, n: int) -> list[Any]:
+        return [
+            RetrievalResult(chunk_id=f"c{i}", score=1.0 - i * 0.01, text=f"t{i}", metadata={})
+            for i in range(n)
+        ]
+
+    def _make_runner(self, reranker: Any) -> EvalRunner:
+        mock_search = MagicMock()
+        mock_search.search.side_effect = lambda query, top_k: self._make_results(top_k)
+        return EvalRunner(hybrid_search=mock_search, evaluator=StubEvaluator(), reranker=reranker)
+
+    def test_enabled_reranker_doubles_pool_then_truncates(self) -> None:
+        reranked = self._make_results(3)  # reranker "returns" fewer than top_k
+        mock_reranker = MagicMock()
+        mock_reranker.is_enabled = True
+        mock_reranker.rerank.return_value = MagicMock(results=reranked)
+
+        runner = self._make_runner(mock_reranker)
+        out = runner._retrieve("qkd security", 10, None)
+
+        # 2x candidate pool requested from hybrid search
+        runner.hybrid_search.search.assert_called_once_with(query="qkd security", top_k=20)
+        # rerank applied at the requested depth (10), not rerank.top_k (5)
+        _, rerank_kwargs = mock_reranker.rerank.call_args
+        assert rerank_kwargs["top_k"] == 10
+        assert out == reranked
+
+    def test_disabled_reranker_keeps_plain_depth(self) -> None:
+        mock_reranker = MagicMock()
+        mock_reranker.is_enabled = False
+
+        runner = self._make_runner(mock_reranker)
+        runner._retrieve("qkd security", 10, None)
+
+        runner.hybrid_search.search.assert_called_once_with(query="qkd security", top_k=10)
+        mock_reranker.rerank.assert_not_called()
+
+    def test_no_reranker_keeps_plain_depth(self) -> None:
+        runner = self._make_runner(None)
+        runner._retrieve("qkd security", 10, None)
+
+        runner.hybrid_search.search.assert_called_once_with(query="qkd security", top_k=10)

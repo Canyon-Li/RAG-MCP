@@ -47,6 +47,7 @@
 | D-030 | 2026-08-27 | 判官 DiskCache：判分 exact-match 缓存（默认开；终验 3 次全新跑必须 `--no-judge-cache`） | 采纳 | feat/eval-judge-cache |
 | D-031 | 2026-08-29 | BM25 重灌幂等：add_documents 的 doc_id 换 chunk_id 前缀单一真相源（修 T13 实测的 num_docs 幻影根因） | 采纳 | fix/bm25-reingest-prefix |
 | D-032 | 2026-08-29 | sparse_top_k 截尾 20→10：RRF 深尾票位移的零成本修复（T14 端到端：source_recall@5 → 1.000 满分） | 采纳 | tune/sparse-topk-truncation |
+| D-033 | 2026-08-29 | cross-encoder 重模型上 MCP stdio 的三层坑：包级 preload 不够（transformers 懒 import）、阻塞预热炸 initialize 握手、e2e 管道无人排空即冻结——主线程裸 import + 后台 warm 线程 + 语义键缓存 | 采纳 | feat/cross-encoder-rerank |
 
 ---
 
@@ -75,6 +76,14 @@
 - **背景**：LLM 调用可能失败、可能没钱、可能没配 key；reranker/evaluator 是重依赖。
 - **决策**：LLM-backed transform（chunk_refiner / metadata_enricher）失败或 `use_llm:false` → 降级到 rule-based；reranker 失败 → 降级到 RRF 顺序；`rerank.enabled` / `evaluation.enabled` 默认 `false`。
 - **理由**：这些组件"不能阻塞主链路"。检索本身必须永远能出结果。
+
+### D-033 cross-encoder 重模型上 MCP stdio 的三层坑（import-lock 边界 / 握手超时 / 管道冻结）
+
+- **碰到**：[T15](../.wayfinder/tickets/T15-cross-encoder-rerank.md) 启用 bge-reranker-v2-m3（2.27GB，CPU torch）后 e2e 反复挂，三种症状逐层剥开：①首查 >90s 无响应——`CrossEncoderReranker` 在 tool handler 的 worker 线程里懒 import torch 全家桶，与 anyio I/O 线程抢 import 锁（D-004 已记载的形状）；②按既有纪律把**模型加载**也挪到主线程 preload 后，initialize 握手 90s+ 才响应——真实客户端的超时根本扛不住；③修完②e2e 仍随机挂——fixture 的 `stderr=subprocess.PIPE` 无人读，torch「Loading weights」进度条写满 Windows ~4KB 管道缓冲，server 冻结在 stderr 写上（每调用起新 stdout reader 还会与残留 readline 线程互吞行）。**教训：D-004 的 preload 纪律只覆盖 import；模型加载既不能阻塞握手、也不能落在 worker 线程——只能进后台 warm 线程 + 缓存共享。**
+- **行业做法**：MCP/JSON-RPC stdio 服务普遍要求子进程 stderr 必须持续排空（stdio transport 的 stderr 本就常用于日志透传）；重型推理模型在服务启动阶段后台 warm + 请求侧共享单例是 serving 常规（vLLM/TGI 的 model warmup 即此义）。
+- **我的解法**：三件套（[server.py](src/mcp_server/server.py) + [reranker.py](src/core/query_engine/reranker.py)）：①主线程裸 `import sentence_transformers`（~6s，import 锁纪律内）；②daemon warm 线程调 `create_core_reranker` 加载模型——`create_core_reranker` 按语义键 `(enabled, provider, model)` 缓存 + `threading.Lock` 双检，早到的首查在锁上等 warm 的实例，不双载不重 import；③e2e harness 改常驻 stderr 排空线程 + 常驻单 stdout reader（[test_mcp_client.py](tests/e2e/test_mcp_client.py)）。副产品：并发 tool call 的 ChromaDB client 创建竞态是存量 bug（基线 rerank-off 可复现），开 [T18](../.wayfinder/tickets/T18-concurrent-chroma-client-race.md) 跟进。
+- **为什么不用别的**：①阻塞式主线程加载——握手 90s+，Copilot/Claude Desktop 的 initialize 超时直接判死；②首查时在 worker 线程加载——回到 import-lock 死锁；③不缓存、每次加载——2GB 模型次次冷读 15-90s，且重触发懒 import；④进程级单例（不做语义键）——测试注入与 settings 变更语义会被缓存污染，语义键 + 显式 `reranker=` 旁路最稳。
+- **关联**：[CLAUDE.md](CLAUDE.md)（MCP stdio 节已更新至此模式）；[[D-004]]（preload 纪律的边界外推）；[[D-005]]（warm 失败走 graceful degradation，首查降级 RRF 顺序）；判官面 A/B 结论见 T15 Resolution（precision +10.9pt 显著 / recall 噪声内——印证 [[T05]] precision 唯一排序敏感）。
 
 ---
 
