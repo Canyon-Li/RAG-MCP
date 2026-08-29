@@ -46,6 +46,7 @@
 | D-029 | 2026-08-27 | 评测量具校准：锁 ragas==0.4.3 + 伪 0/NaN 剔除 + 判官噪声底实测 6.4pt/4.9pt（判读纪律升级为 3 次取中位数） | 采纳 | fix/eval-gauge-calibration |
 | D-030 | 2026-08-27 | 判官 DiskCache：判分 exact-match 缓存（默认开；终验 3 次全新跑必须 `--no-judge-cache`） | 采纳 | feat/eval-judge-cache |
 | D-031 | 2026-08-29 | BM25 重灌幂等：add_documents 的 doc_id 换 chunk_id 前缀单一真相源（修 T13 实测的 num_docs 幻影根因） | 采纳 | fix/bm25-reingest-prefix |
+| D-032 | 2026-08-29 | sparse_top_k 截尾 20→10：RRF 深尾票位移的零成本修复（T14 端到端：source_recall@5 → 1.000 满分） | 采纳 | tune/sparse-topk-truncation |
 
 ---
 
@@ -145,6 +146,14 @@
 - **我的解法**：前缀计算收敛为 `VectorUpserter.chunk_id_prefix(source_path)` 单一真相源（`_generate_chunk_id` 与 pipeline 6b 共用同一函数，杜绝双写漂移）；pipeline 传 `doc_id=chunk_id_prefix(chunks[0].metadata["source_path"])`；新增重灌幂等回归单测 [test_pipeline_bm25_reingest.py](tests/unit/test_pipeline_bm25_reingest.py)——同路径连灌两次、第二次内容漂移，断言 unique 精确替换（比「不涨」更严）、`num_docs == unique`、无重复 posting、旧版本 chunk 全消失。数据不回填（evaluation 库 T13 已修好；`t13_repair.py` 保留应急）。
 - **为什么不用别的**：① 从 `vector_ids` 提取字符串公共前缀——依赖 ID 格式（分隔符/位数）的字符串结构知识，格式一变即静默失效；重算复用生成函数本身，格式知识只存在一处。② 改 `add_documents` 直接收 chunks 或维护 doc→chunk 映射表——改动面远超防御性修复。③ 同族 bug（`document_manager.delete_document` 同样把内容哈希传给 `remove_document`，删除路径永不命中）**有意不在本单修**——重灌与显式删除是不同验证面，拆 [T17](../.wayfinder/tickets/T17-bm25-delete-prefix-bug.md)。④ 路径哈希跨机/跨目录漂移不解决——改它 = 换全套 id 方案，代价远超收益（工单边界：本决策只保证「同路径重灌」幂等）。
 - **关联**：[pipeline.py](src/ingestion/pipeline.py)（6b）；[vector_upserter.py](src/ingestion/storage/vector_upserter.py)（chunk_id_prefix）；[bm25_indexer.py](src/ingestion/storage/bm25_indexer.py)（doc_id 契约 docstring）。根因发现链：[[D-027]]（docling 重解析漂移，同族暗坑第一环）→ T13 → 本条。
+
+### D-032 sparse_top_k 截尾 20→10：RRF 深尾票位移的零成本修复
+
+- **碰到**：评测工作 [T03](../.wayfinder/tickets/T03-sparse-path-contribution-ab.md) 探针发现反直觉现象——sparse 路径名义上帮忙（hybrid vs dense-only 全指标正向），但它的第 11–20 名**深尾票**在 RRF k=60 平滑下仍有票值（1/71~1/80 ≈ 0.0125–0.0141）：一个同时在 dense 中游出现的噪声 chunk 两票合计（≈0.026）足以压过 dense 头部单票候选（#3 ≈ 0.0159）——「深尾票把侵入者推过头部候选」。截尾到 10 后离线指标全面变好。[T14](../.wayfinder/tickets/T14-sparse-topk-truncation.md) 挂 T13 修复后新锚做端到端单变量对比确认：source_recall@5 0.9565→**1.000 满分**、source_precision@5 +2.6pt；判官口径 Δ（+2.3/+1.0pt）落噪声底（D-029：6.42/4.85pt）内，按纪律不作结论。
+- **行业做法**：RRF 原论文（Cormack et al., SIGIR 2009）本身用于融合不等长、异构来源的排名列表——排名投票制不要求两路对称；混合检索引擎（Elastic/Weaviate hybrid）也普遍允许各路独立 top-k。教训属「more candidates ≠ better」族：融合前截尾是控制弱票位移的常规手段。
+- **我的解法**：[settings.yaml](config/settings.yaml) `retrieval.sparse_top_k: 20 → 10`——单行配置、查询侧生效、零重灌。**两路刻意不对称**（dense 保持 20）：各路保留自己的有效深度（sparse 单路 recall@5=1.000，前 10 已全覆盖，11–20 是纯深尾票；dense 单路 0.9565，深尾里有真源，截它伤覆盖）。对比 run 落盘 `logs/eval_t14_s10/`（gitignored；判官缓存开，3 个检索列表未变题精确回放 0 违约）。
+- **为什么不用别的**：① 对称截 dense 到 10——dense 深尾有真源，预期伤 recall，且违反一次一变量的实验纪律、无实测支撑；② 升 sparse 权重（w05）——T03 实测是钝刀（仅 prec@5 +2.6pt、recall/MRR 逐题不动）且与截尾**负叠加**（w05_s10 全面低于 s10），还需代码接线 fuse_with_weights；③ 交给 rerank 修排序——T15 主序列本有此计划，但截尾在 rerank 之前先消掉位移源，与 rerank 不互斥。
+- **关联**：[settings.yaml](config/settings.yaml)（retrieval 段注释）；[hybrid_search.py](src/core/query_engine/hybrid_search.py)（sparse_top_k 接线）。对照锚见 [[D-030]]（判官缓存使未变题回放零噪声）；判读纪律承 [[D-029]]（噪声底内不作结论）。
 
 ---
 
