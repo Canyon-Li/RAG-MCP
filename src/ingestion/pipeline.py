@@ -484,10 +484,17 @@ class IngestionPipeline:
 
             # 6b: BM25 Index
             logger.info("  6b. BM25 Index...")
+            # doc_id must be the chunk-ID prefix (sha256(source_path)[:8]),
+            # NOT document.id (a content hash) — remove_document matches on
+            # chunk_id.startswith(doc_id), and a content-hash id never
+            # matches, leaving stale postings behind on re-ingest (T16).
+            doc_prefix = self.vector_upserter.chunk_id_prefix(
+                chunks[0].metadata["source_path"]
+            )
             self.bm25_indexer.add_documents(
                 sparse_stats,
                 collection=self.collection,
-                doc_id=document.id,
+                doc_id=doc_prefix,
                 trace=trace,
             )
             logger.info(f"      Index built for {len(sparse_stats)} documents")
