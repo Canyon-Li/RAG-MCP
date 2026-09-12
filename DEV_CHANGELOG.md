@@ -48,6 +48,7 @@
 | D-031 | 2026-08-29 | BM25 重灌幂等：add_documents 的 doc_id 换 chunk_id 前缀单一真相源（修 T13 实测的 num_docs 幻影根因） | 采纳 | fix/bm25-reingest-prefix |
 | D-032 | 2026-08-29 | sparse_top_k 截尾 20→10：RRF 深尾票位移的零成本修复（T14 端到端：source_recall@5 → 1.000 满分） | 采纳 | tune/sparse-topk-truncation |
 | D-033 | 2026-08-29 | cross-encoder 重模型上 MCP stdio 的三层坑：包级 preload 不够（transformers 懒 import）、阻塞预热炸 initialize 握手、e2e 管道无人排空即冻结——主线程裸 import + 后台 warm 线程 + 语义键缓存 | 采纳 | feat/cross-encoder-rerank |
+| D-034 | 2026-08-29 | references 段 query 侧过滤：entry-density 检测 + 融合全池**剔出**（非降位——cross-encoder 重打分会洗掉降位）+ 回填要求融合不预截断 | 采纳 | feat/reference-section-filter |
 
 ---
 
@@ -279,6 +280,16 @@
 - **理由**：generic 是死功能，放弃零损失；filter key 与下游处理逻辑强绑定（collection→物理隔离、tags→post-fusion、source_path→partial、doc_type→exact where），加新 key 不止改配置还得改下游分支，所以白名单是代码契约而非配置；单字母别名是 N4 近亲（`c:\路径`、`s:3`），多字母别名够便捷。
 - **代价 / 现状**：改动集中在 `query_processor.py`（`_extract_filters` 重构 + 删别名 tuple），`hybrid_search`/`chroma_store`/`settings` 零改动（下游 generic else 成死代码，防御性保留不清理，spec §7）。43 测试全绿；e2e：`Azure:服务端 配置` → `filters=(none)` + FUSION=10（修复前 `filters={"azure":"服务端"}` 杀零=0）。commits `548d508` + `7763c04`（keyword 断言回归保险），final review (opus) Ready to merge。
 - **关联**：[query_processor.py](src/core/query_engine/query_processor.py)；[spec](docs/superpowers/specs/2026-07-22-n4-filter-parsing-allowlist-design.md) / [plan](docs/superpowers/plans/2026-07-22-n4-filter-parsing-allowlist.md)；`PDF处理链路分析.md` §5 N4。与 [[D-021]]/[[D-022]] 同根（filter 收口系统化的第三层——解析层），从源头不让 generic filter 产生，下游不再误触发。
+
+---
+
+### D-034 references 段 query 侧过滤：剔出而非降位，全池融合而非截断后过滤
+- **碰到**：[T15](../.wayfinder/tickets/T15-cross-encoder-rerank.md) 判官 precision +10.9pt 的代价 = 「万金油段」侵入——cross-encoder 对含概念词的查询（gate set / quantum gates）给参考文献段打高分（作者-标题词汇密度全场最高），q7 的 TOP1 侵入者就是他文 References 页（`d28d9bf1_0066`），挤掉覆盖 reference statements 的实段。[T19](../.wayfinder/tickets/T19-reference-section-filter.md) 要求 query 侧过滤（零重灌）。实现时踩到两个非显然的机制点：① **「降位到队尾」无效**——cross-encoder 对每个候选独立重打分、与输入顺序无关，降位后的 references chunk 照样被拉回 TOP；② **原 fusion 在内部预截断到 top_k**——过滤后没有更深候选可回填。
+- **行业做法**：学术检索系统普遍对 references/appendix 段做索引期降权或检索期过滤（文档结构感知的 boilerplate 处理）；本仓库的特殊约束是 rerank 在过滤之后还会重排，通用的「demote」语义在这里失效。
+- **我的解法**：[reference_filter.py](src/core/query_engine/reference_filter.py) entry-density 检测（条目行 = 作者缩写/年份/行首 `[n]`（计双）/场馆词 **≥2 特征共现**；非空行 ≥50% 为条目行才判 references——单特征遍地误伤正文，共现+密度双门槛保精度）；挂点 = `HybridSearch.search` 内部，fusion 改 `top_k=None` **全池融合** → `_maybe_filter_references` 剔出 → 再截断；`retrieval.filter_references` config 开关（off 时逐位零变化 = A/B 对照臂）。619 chunks 全库普查：34 命中 = 6 篇论文 references 尾段全部、零内容段误伤（误伤样本直接进单测）。
+- **为什么不用别的**：① 降位（工单的第一选项）——被 rerank 洗掉，见上；② ingestion 侧 chunk_refiner 剔 references 文本——更彻底但是重灌类杠杆（纪律②：重灌三暗坑 T06）；③ 摘要/科普段一起降权——无可靠文本特征且 abstract 常是覆盖点，工单明确第一轮不做（留 T20，需逐题数据支撑）；④ LLM 判别 references 段——判官费+延迟+不确定，正则普查已零误伤。
+- **代价 / 现状**：A/B（对照 T15，判官缓存开）：确定性门全 PASS（recall@5 1.000 保持、prec@5 持平）；context_recall +1.1pt（q7 +25pt 单点救回，< 4.85pt 噪声底不作结论）、判官 precision −1.5pt（噪声内；q4 −33.3 但确定性 prec@5 +0.20，文件级 vs 内容级口径矛盾）。连锁位移风险面（回填改变重排池成分，4 题列表变了但不在侵入题集合）已被确定性门覆盖。配置默认开。
+- **关联**：[T19 Resolution](../.wayfinder/tickets/T19-reference-section-filter.md)；[hybrid_search.py](src/core/query_engine/hybrid_search.py)（全池融合→过滤→截断）；对照 [[D-032]]（同为 query 侧零重灌杠杆、同走单变量 A/B + 确定性门纪律）；侵入者机制归因见 [[D-033]] 所在的 T15。
 
 ---
 
