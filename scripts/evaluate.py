@@ -175,6 +175,12 @@ def main() -> int:
                 sparse_retriever=sparse_retriever,
             )
             print(f"✅ HybridSearch initialized for collection: {collection}")
+            # T19: reference-filter arm label (mirror of the rerank effective-
+            # type print — A/B drivers grep this to guard arm identity)
+            print(
+                f"✅ Reference filter: "
+                f"{'on' if settings.retrieval.filter_references else 'off'}"
+            )
         except Exception as exc:
             print(f"⚠️  Failed to initialize search (running without retrieval): {exc}")
 

@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from src.core.query_engine.reference_filter import detect_reference_section
 from src.core.types import ProcessedQuery, RetrievalResult
 
 if TYPE_CHECKING:
@@ -91,6 +92,7 @@ class HybridSearchConfig:
     enable_sparse: bool = True
     parallel_retrieval: bool = True
     metadata_filter_post: bool = True
+    filter_references: bool = False  # T19: drop references-section chunks post-fusion
 
 
 @dataclass
@@ -212,6 +214,7 @@ class HybridSearch:
             enable_sparse=True,
             parallel_retrieval=True,
             metadata_filter_post=True,
+            filter_references=bool(getattr(retrieval_config, 'filter_references', False)),
         )
     
     def search(
@@ -302,6 +305,12 @@ class HybridSearch:
                 top_k=effective_top_k,
                 trace=trace,
             )
+
+        # T19: references filter also applies on single-path fallbacks.
+        # The pool here is already capped by the retriever's top-k, so
+        # removal shortens the list — no deeper candidates to backfill.
+        if used_fallback and fused_results:
+            fused_results = self._maybe_filter_references(fused_results, trace)
         
         # Step 5: Apply post-fusion metadata filters (if any)
         if merged_filters and self.config.metadata_filter_post:
@@ -620,28 +629,41 @@ class HybridSearch:
             Fused and ranked list of RetrievalResults.
         """
         if self.fusion is None:
-            # Fallback: interleave results (simple round-robin)
+            # Fallback: interleave results (simple round-robin). Interleave the
+            # FULL pool, filter, then truncate — same filter-before-truncation
+            # order as the RRF path so backfill behaves identically.
             logger.warning("No fusion configured, using simple interleave")
-            return self._interleave_results(dense_results, sparse_results, top_k)
-        
+            return self._maybe_filter_references(
+                self._interleave_results(
+                    dense_results, sparse_results,
+                    len(dense_results) + len(sparse_results),
+                ),
+                trace,
+            )[:top_k]
+
         # Build ranking lists for RRF
         ranking_lists = []
         if dense_results:
             ranking_lists.append(dense_results)
         if sparse_results:
             ranking_lists.append(sparse_results)
-        
+
         if not ranking_lists:
             return []
-        
+
         if len(ranking_lists) == 1:
             # Only one source, no fusion needed
-            return ranking_lists[0][:top_k]
-        
+            return self._maybe_filter_references(ranking_lists[0], trace)[:top_k]
+
         _t0 = time.monotonic()
+        # Fuse the FULL candidate pool (top_k=None): the references filter
+        # (T19) must see beyond top_k so removed chunks backfill from deeper
+        # ranks — truncating here would leave the pool exhausted. RRF is a
+        # total order (score desc, chunk_id tiebreak), so fusing fully and
+        # slicing later is element-wise identical to fusing with top_k.
         fused = self.fusion.fuse(
             ranking_lists=ranking_lists,
-            top_k=top_k,
+            top_k=None,
             trace=trace,
         )
         _elapsed = (time.monotonic() - _t0) * 1000.0
@@ -651,9 +673,53 @@ class HybridSearch:
                 "input_lists": len(ranking_lists),
                 "top_k": top_k,
                 "result_count": len(fused),
-                "chunks": _snapshot_results(fused),
+                "chunks": _snapshot_results(fused[:top_k]),
             }, elapsed_ms=_elapsed)
-        return fused
+        return self._maybe_filter_references(fused, trace)[:top_k]
+
+    def _maybe_filter_references(
+        self,
+        results: List[RetrievalResult],
+        trace: Optional[Any],
+    ) -> List[RetrievalResult]:
+        """Drop references-section chunks from the candidate pool (T19).
+
+        The cross-encoder re-scores every candidate independently, so
+        demotion-to-tail would be nullified by rerank — detected chunks are
+        REMOVED from the pool instead, and because this runs before the
+        top-k truncation, deeper candidates backfill (后续候选顶上).
+        Both consumer paths (EvalRunner, query_knowledge_hub) call
+        ``search()``, so this mount point covers them without caller changes.
+
+        No-op when ``filter_references`` is off (zero-diff control arm for
+        the T19 A/B) or when nothing matches.
+        """
+        if not self.config.filter_references or not results:
+            return results
+
+        _t0 = time.monotonic()
+        kept: List[RetrievalResult] = []
+        removed: List[RetrievalResult] = []
+        for r in results:
+            (removed if detect_reference_section(r.text) else kept).append(r)
+        _elapsed = (time.monotonic() - _t0) * 1000.0
+
+        if not removed:
+            return results
+
+        logger.info(
+            "Reference filter: removed %d/%d candidates (%s)",
+            len(removed), len(results),
+            ", ".join(r.chunk_id for r in removed),
+        )
+        if trace is not None:
+            trace.record_stage("reference_filter", {
+                "method": "entry_density",
+                "removed_count": len(removed),
+                "kept_count": len(kept),
+                "removed_chunk_ids": [r.chunk_id for r in removed],
+            }, elapsed_ms=_elapsed)
+        return kept
     
     def _interleave_results(
         self,

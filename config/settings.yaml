@@ -59,6 +59,7 @@ retrieval:
   sparse_top_k: 10  # T14: 20→10——RRF 下 sparse 11–20 深尾票净伤害（T03 探针：recall@5→1.000、prec@5 +1.74pt），截尾消位移保共识
   fusion_top_k: 10
   rrf_k: 60
+  filter_references: true  # T19: query 侧 references 段过滤——融合全池检测剔出后再截断（rerank 重打分会洗掉降位，必须剔出+回填）；治 q7/q4 型参考文献段侵入
 
 # =============================================================================
 # Rerank Configuration (T15: cross-encoder enabled)

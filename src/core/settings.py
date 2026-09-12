@@ -129,6 +129,9 @@ class RetrievalSettings:
     sparse_top_k: int
     fusion_top_k: int
     rrf_k: int
+    # T19: query-side references-section filter (post-fusion, pre-truncation).
+    # Optional so pre-T19 configs keep parsing (defaults to off).
+    filter_references: bool = False
 
 
 @dataclass(frozen=True)
@@ -299,6 +302,7 @@ class Settings:
                 sparse_top_k=_require_int(retrieval, "sparse_top_k", "retrieval"),
                 fusion_top_k=_require_int(retrieval, "fusion_top_k", "retrieval"),
                 rrf_k=_require_int(retrieval, "rrf_k", "retrieval"),
+                filter_references=bool(retrieval.get("filter_references", False)),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),
