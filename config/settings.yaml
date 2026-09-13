@@ -77,12 +77,10 @@ evaluation:
   enabled: true
   provider: "composite"
   backends:
-    - "custom"
-    - "ragas"
+    - "ragas"  # T20: custom 退出默认（source_*/hit_rate/mrr 已随 v4.0 退役；计算路径保留，历史 run 仍可复算）
   metrics:
-    - "source_recall_at_k"
-    - "source_precision_at_k"
-    - "context_relevance"
+    - "faithfulness"
+    - "answer_relevancy"
     - "context_precision"
     - "context_recall"
 

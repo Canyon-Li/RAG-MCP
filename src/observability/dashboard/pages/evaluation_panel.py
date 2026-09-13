@@ -36,7 +36,9 @@ def render() -> None:
     st.header("📏 Evaluation Panel")
     st.markdown(
         "评估在 CLI 运行(`python scripts/evaluate.py`),本页只读展示报告。"
-        "五指标 = v1 四指标 + **context_recall**(v2 新增)。"
+        "T20 起为端到端 RAG 评测:标准 ragas 4 参数"
+        "(**faithfulness / answer_relevancy / context_precision / context_recall**);"
+        "v4.0 退役指标(source_* / context_relevance)保留展示位,历史 run 仍可读。"
     )
 
     svc = EvaluationReportService()
