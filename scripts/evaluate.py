@@ -59,8 +59,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=10,
-        help="Number of chunks to retrieve per query (default: 10).",
+        default=5,
+        help=(
+            "Number of chunks to retrieve per query (default: 5 — the "
+            "production default of the MCP query tool; eval must test the "
+            "real shape, T20 decision 2026-09-13)."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -70,7 +74,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--no-search",
         action="store_true",
-        help="Skip retrieval (evaluate with mock chunks for testing).",
+        help=(
+            "Skip retrieval AND answer generation (evaluate with mock chunks "
+            "for testing; legacy concat placeholder answers)."
+        ),
     )
     parser.add_argument(
         "--output", "-o",
@@ -203,12 +210,36 @@ def main() -> int:
         except Exception as exc:
             print(f"⚠️  Failed to create reranker (continuing without): {exc}", file=sys.stderr)
 
+    # T20: answer generation — settings.llm (local granite, temperature 0),
+    # grounded by config/prompts/rag_answer.txt. Hard-fail on construction:
+    # a T20-era run without generation is a mislabeled arm (answer-side
+    # metrics silently skipped). --no-search keeps the legacy mock path.
+    answer_generator = None
+    if not args.no_search:
+        from src.observability.evaluation.answer_generator import (
+            build_answer_generator,
+        )
+
+        try:
+            answer_generator = build_answer_generator(settings)
+        except Exception as exc:
+            print(
+                f"❌ Failed to create answer generator (settings.llm): {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            f"✅ Answer generation: {settings.llm.provider}/"
+            f"{settings.llm.model}"
+        )
+
     # Create and run EvalRunner
     runner = EvalRunner(
         settings=settings,
         hybrid_search=hybrid_search,
         evaluator=evaluator,
         reranker=reranker,
+        answer_generator=answer_generator,
     )
 
     try:

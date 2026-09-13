@@ -112,10 +112,18 @@ class EvalReport:
 
 
 def load_test_set(path: str | Path) -> List[GoldenTestCase]:
-    """Load golden test set from a JSON file.
+    """Load golden test set from a JSON or ragas-native jsonl file.
+
+    Two dialects, selected by file suffix:
+
+    - ``.json`` — the v1/v4.0 house format (``{"test_cases": [...]}``).
+    - ``.jsonl`` — ragas ``SingleTurnSample`` per line (what
+      ``EvaluationDataset.to_jsonl`` writes; verified round-trip against
+      ragas 0.4.3). Parsed with stdlib json — importing ragas just to read
+      two fields would drag its vertexai import-stub into every consumer.
 
     Args:
-        path: Path to the golden test set JSON file.
+        path: Path to the golden test set file.
 
     Returns:
         List of TestCase instances.
@@ -128,6 +136,9 @@ def load_test_set(path: str | Path) -> List[GoldenTestCase]:
     if not file_path.exists():
         raise FileNotFoundError(f"Golden test set not found: {file_path}")
 
+    if file_path.suffix.lower() == ".jsonl":
+        return _load_test_set_jsonl(file_path)
+
     with file_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
@@ -137,6 +148,39 @@ def load_test_set(path: str | Path) -> List[GoldenTestCase]:
         )
 
     return [GoldenTestCase.from_dict(tc) for tc in data["test_cases"]]
+
+
+def _load_test_set_jsonl(file_path: Path) -> list[GoldenTestCase]:
+    """Load a ragas-native jsonl test set (SingleTurnSample per line).
+
+    Field mapping: ``user_input`` → query, ``reference`` → reference_answer.
+    Everything else (retrieved_contexts / response / reference_contexts …)
+    belongs to the ragas scoring pipeline, not this runner, and is ignored.
+    """
+    cases: list[GoldenTestCase] = []
+    with file_path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                sample = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"Invalid jsonl on line {line_no} of {file_path}: {exc}"
+                ) from exc
+            if not isinstance(sample, dict) or not sample.get("user_input"):
+                raise ValueError(
+                    f"Invalid jsonl sample at line {line_no} of {file_path}: "
+                    "missing 'user_input'"
+                )
+            cases.append(
+                GoldenTestCase(
+                    query=sample["user_input"],
+                    reference_answer=sample.get("reference") or None,
+                )
+            )
+    return cases
 
 
 class EvalRunner:
@@ -279,10 +323,10 @@ class EvalRunner:
             self._get_chunk_id(c) for c in retrieved_chunks
         ]
 
-        # Step 2: Generate answer — prefer user override, then generator, then fallback
-        if answer_override:
-            answer = answer_override
-        else:
+        # Step 2: Generate answer — user override wins; else generate (None on
+        # failure → answer-side metrics skip, T20 policy).
+        answer: str | None = answer_override or None
+        if answer is None:
             answer = self._generate_answer(test_case.query, retrieved_chunks)
         qr.generated_answer = answer
 
@@ -352,19 +396,29 @@ class EvalRunner:
             logger.warning("Retrieval failed for '%s': %s", query[:40], exc)
             return []
 
-    def _generate_answer(self, query: str, chunks: List[Any]) -> str:
+    def _generate_answer(self, query: str, chunks: List[Any]) -> str | None:
         """Generate an answer from retrieved chunks.
 
-        If a custom answer_generator is provided, use it.
-        Otherwise, concatenate chunk texts as a simple placeholder.
+        With a generator configured (T20 era): its return value wins —
+        including None on failure, so answer-side metrics skip instead of
+        scoring garbage. No concat fallback here: a concatenated pseudo-answer
+        would score faithfulness ≈ 1.0 (the "answer" IS the context) and fake
+        the gauge.
+
+        Without a generator (legacy retrieval-only runs): concatenate chunk
+        texts as a placeholder.
         """
         if self.answer_generator is not None:
             try:
                 return self.answer_generator(query, chunks)
             except Exception as exc:
-                logger.warning("Answer generation failed: %s", exc)
+                logger.warning(
+                    "Answer generation failed: %s — answer-side metrics "
+                    "skipped for this query.", exc,
+                )
+                return None
 
-        # Fallback: concatenate chunk texts
+        # Legacy fallback: concatenate chunk texts
         texts = []
         for c in chunks:
             if isinstance(c, str):

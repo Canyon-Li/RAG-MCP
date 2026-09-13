@@ -31,6 +31,8 @@ class TestRagasEvaluatorInit:
             "context_precision",
             "context_recall",
             "context_relevance",
+            "faithfulness",
+            "answer_relevancy",
         }
 
     def test_init_custom_metrics(self) -> None:
@@ -63,7 +65,7 @@ class TestRagasEvaluatorInit:
         from src.observability.evaluation.ragas_evaluator import RagasEvaluator
 
         evaluator = RagasEvaluator(settings=None, metrics=None)
-        assert len(evaluator._metric_names) == 3
+        assert len(evaluator._metric_names) == 5
 
 
 class TestRagasImportCheck:
@@ -286,10 +288,11 @@ class TestRagasMetricRouting:
     """Tests that RagasEvaluator routes to context_relevance / context_precision."""
 
     def test_supported_metrics_replaced(self) -> None:
-        """SUPPORTED_METRICS should now be context_relevance + context_precision."""
+        """T20: 5 supported — 3 retrieval-era + faithfulness/answer_relevancy."""
         from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
         assert SUPPORTED_METRICS == {
             "context_relevance", "context_precision", "context_recall",
+            "faithfulness", "answer_relevancy",
         }
 
     def test_context_relevance_called(self) -> None:
@@ -615,6 +618,288 @@ class TestBuildWrappersDeepseekBranch:
             result = evaluator._build_wrappers()
 
         assert result is mock_factory.return_value
+
+
+class TestAnswerSideMetrics:
+    """T20: faithfulness / answer_relevancy — the generation-era metrics.
+
+    ragas 0.4.3 collections metrics verified live before implementation:
+    Faithfulness(llm) scores (user_input, response, retrieved_contexts);
+    AnswerRelevancy(llm, embeddings) scores (user_input, response) and its
+    embeddings arg is REQUIRED at __init__ (missing → TypeError).
+    """
+
+    def test_supported_metrics_expanded(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import SUPPORTED_METRICS
+        assert SUPPORTED_METRICS == {
+            "context_relevance", "context_precision", "context_recall",
+            "faithfulness", "answer_relevancy",
+        }
+
+    def test_init_accepts_new_metrics(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator(metrics=["faithfulness", "answer_relevancy"])
+        assert evaluator._metric_names == ["faithfulness", "answer_relevancy"]
+
+    def test_faithfulness_called_with_response(self) -> None:
+        """faithfulness passes response= (the generated answer) plus contexts."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["faithfulness"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = 0.9
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.Faithfulness"
+        ) as mock_f, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock(name="llm")
+        ):
+            mock_f.return_value = fake_metric
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response="ans",
+            )
+
+        assert scores["faithfulness"] == 0.9
+        mock_f.return_value.score.assert_called_once_with(
+            user_input="q", response="ans", retrieved_contexts=["ctx"],
+        )
+        # constructed with llm= (required positional in ragas 0.4.3)
+        assert mock_f.call_args.kwargs.get("llm") is not None
+
+    def test_faithfulness_skipped_without_response(self) -> None:
+        """No generated answer → excluded (absent key), never a pseudo-0.0 —
+        symmetric with the reference-missing rule (T10)."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["faithfulness"]
+        evaluator.settings = MagicMock()
+
+        with patch(
+            "ragas.metrics.collections.Faithfulness"
+        ) as mock_f, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response=None,
+            )
+
+        assert "faithfulness" not in scores
+        mock_f.return_value.score.assert_not_called()
+
+    def test_answer_relevancy_constructed_with_embeddings(self) -> None:
+        """answer_relevancy needs llm + embeddings at construction and scores
+        with (user_input, response) only — no retrieved_contexts."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["answer_relevancy"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = 0.7
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.AnswerRelevancy"
+        ) as mock_ar, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock(name="llm")
+        ), patch.object(
+            evaluator, "_build_judge_embeddings",
+            return_value=MagicMock(name="emb"),
+        ) as mock_emb_build:
+            mock_ar.return_value = fake_metric
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response="ans",
+            )
+
+        assert scores["answer_relevancy"] == 0.7
+        kwargs = mock_ar.call_args.kwargs
+        assert kwargs.get("llm") is not None
+        assert kwargs.get("embeddings") is not None
+        mock_ar.return_value.score.assert_called_once_with(
+            user_input="q", response="ans",
+        )
+        # embeddings are only built when this metric is in the list
+        mock_emb_build.assert_called_once()
+
+    def test_answer_relevancy_skipped_without_response(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["answer_relevancy"]
+        evaluator.settings = MagicMock()
+
+        with patch(
+            "ragas.metrics.collections.AnswerRelevancy"
+        ) as mock_ar, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response=None,
+            )
+
+        assert "answer_relevancy" not in scores
+        mock_ar.return_value.score.assert_not_called()
+
+    def test_context_metrics_do_not_build_embeddings(self) -> None:
+        """Retrieval-only metric mix must not require a judge embedding —
+        answer_relevancy drives the only emb construction."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["context_precision"]
+        evaluator.settings = MagicMock()
+
+        fake_metric = MagicMock()
+        fake_result = MagicMock()
+        fake_result.value = 0.5
+        fake_metric.score.return_value = fake_result
+
+        with patch(
+            "ragas.metrics.collections.ContextPrecision"
+        ) as mock_cp, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ), patch.object(
+            evaluator, "_build_judge_embeddings",
+        ) as mock_emb_build:
+            mock_cp.return_value = fake_metric
+            evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response="ans",
+            )
+
+        mock_emb_build.assert_not_called()
+
+    def test_evaluate_forwards_generated_answer(self) -> None:
+        """evaluate() threads generated_answer into _run_ragas as response."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = ["faithfulness"]
+        evaluator.settings = MagicMock()
+
+        with patch.object(
+            evaluator, "_run_ragas", return_value={"faithfulness": 0.9}
+        ) as mock_run:
+            evaluator.evaluate(
+                query="q",
+                retrieved_chunks=[{"text": "ctx"}],
+                generated_answer="the answer",
+                ground_truth={"reference": "ref"},
+            )
+
+        assert mock_run.call_args.kwargs.get("response") == "the answer"
+
+
+class TestJudgeEmbeddingsBuilder:
+    """T20: local Ollama embeddings for AnswerRelevancy (deepseek has no
+    embedding API — the judge's only local component)."""
+
+    def test_builds_openai_embeddings_against_ollama(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        monkeypatch.delenv("RAGAS_JUDGE_EMB_MODEL", raising=False)
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        with patch(
+            "ragas.embeddings.OpenAIEmbeddings"
+        ) as mock_emb_cls, patch(
+            "openai.AsyncOpenAI"
+        ) as mock_client_cls:
+            mock_client_cls.return_value = MagicMock(name="client")
+            evaluator._build_judge_embeddings()
+
+        client_kwargs = mock_client_cls.call_args.kwargs
+        assert "localhost:11434/v1" in client_kwargs["base_url"]
+        assert client_kwargs["api_key"] == "ollama"
+        emb_kwargs = mock_emb_cls.call_args.kwargs
+        assert emb_kwargs["model"] == "nomic-embed-text"
+        assert emb_kwargs["client"] is mock_client_cls.return_value
+
+    def test_emb_model_env_override(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_EMB_MODEL", "bge-m3")
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+
+        with patch(
+            "ragas.embeddings.OpenAIEmbeddings"
+        ) as mock_emb_cls, patch(
+            "openai.AsyncOpenAI"
+        ):
+            evaluator._build_judge_embeddings()
+
+        assert mock_emb_cls.call_args.kwargs["model"] == "bge-m3"
+
+
+class TestPerMetricIsolation:
+    """T20 first-run lesson: a single judge-call transport failure (deepseek
+    connect timeout under the ~7-calls/question 4-metric volume) must drop
+    ONLY that metric — not zero out all four via exception propagation."""
+
+    def _make_evaluator(self, metric_names):
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator._metric_names = metric_names
+        evaluator.settings = MagicMock()
+        return evaluator
+
+    def test_one_metric_raising_excludes_only_itself(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        evaluator = self._make_evaluator(
+            ["faithfulness", "context_precision"]
+        )
+        good_result = MagicMock()
+        good_result.value = 0.8
+
+        with patch(
+            "ragas.metrics.collections.Faithfulness"
+        ) as mock_f, patch(
+            "ragas.metrics.collections.ContextPrecision"
+        ) as mock_cp, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            mock_f.return_value.score.side_effect = TimeoutError(
+                "APITimeoutError"
+            )
+            mock_cp.return_value.score.return_value = good_result
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response="ans",
+            )
+
+        assert scores == {"context_precision": 0.8}
+
+    def test_all_metrics_raising_returns_empty_not_raise(self) -> None:
+        evaluator = self._make_evaluator(["faithfulness", "context_recall"])
+
+        with patch(
+            "ragas.metrics.collections.Faithfulness"
+        ) as mock_f, patch(
+            "ragas.metrics.collections.ContextRecall"
+        ) as mock_crc, patch.object(
+            evaluator, "_build_wrappers", return_value=MagicMock()
+        ):
+            mock_f.return_value.score.side_effect = TimeoutError("t")
+            mock_crc.return_value.score.side_effect = TimeoutError("t")
+            scores = evaluator._run_ragas(
+                query="q", contexts=["ctx"], reference="ref", response="ans",
+            )
+
+        assert scores == {}
 
 
 class TestJudgeDiskCache:

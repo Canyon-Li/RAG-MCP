@@ -19,12 +19,16 @@ from src.core.settings import resolve_path
 logger = logging.getLogger(__name__)
 
 HISTORY_RUN_ID = "__history__"
+# T20: standard ragas 4-metric era. The v4.0-era keys stay registered so
+# historical runs still parse; runs simply surface None for absent metrics.
 METRIC_KEYS = (
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
     "source_recall_at_k",
     "source_precision_at_k",
     "context_relevance",
-    "context_precision",
-    "context_recall",
 )
 
 
@@ -36,11 +40,13 @@ class MetricSpec:
 
 
 METRIC_SPECS: List[MetricSpec] = [
-    MetricSpec("source_recall_at_k", "source_recall@5", "top-5 里有没有命中正确论文"),
-    MetricSpec("source_precision_at_k", "source_precision@5", "top-5 里命中正确论文的比例"),
-    MetricSpec("context_relevance", "context_relevance", "检索回的上下文和问题相关吗"),
-    MetricSpec("context_precision", "context_precision", "相关 chunk 是否排在前面"),
-    MetricSpec("context_recall", "context_recall", "该召回的信息,检索结果覆盖了吗"),
+    MetricSpec("faithfulness", "faithfulness", "回答是否忠于检索到的上下文（判官）"),
+    MetricSpec("answer_relevancy", "answer_relevancy", "回答是否切题（判官 + 本地 embedding）"),
+    MetricSpec("context_precision", "context_precision", "相关 chunk 是否排在前面（判官）"),
+    MetricSpec("context_recall", "context_recall", "该召回的信息,检索结果覆盖了吗（判官）"),
+    MetricSpec("source_recall_at_k", "source_recall@5", "top-5 里有没有命中正确论文（v4.0 退役）"),
+    MetricSpec("source_precision_at_k", "source_precision@5", "top-5 里命中正确论文的比例（v4.0 退役）"),
+    MetricSpec("context_relevance", "context_relevance", "检索回的上下文和问题相关吗（v4.0 退役）"),
 ]
 
 

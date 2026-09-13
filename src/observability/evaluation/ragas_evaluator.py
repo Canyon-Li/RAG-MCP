@@ -48,8 +48,8 @@ logger = logging.getLogger(__name__)
 CONTEXT_RELEVANCE = "context_relevance"
 CONTEXT_PRECISION = "context_precision"
 CONTEXT_RECALL = "context_recall"
-
-SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION, CONTEXT_RECALL}
+FAITHFULNESS = "faithfulness"
+ANSWER_RELEVANCY = "answer_relevancy"
 
 
 def _import_ragas() -> None:
@@ -87,7 +87,15 @@ class RagasEvaluator(BaseEvaluator):
     # this CLASS attribute (hasattr(cls, "SUPPORTED_METRICS")) to route metrics
     # per backend. Must stay a class attribute — a bare module-level constant
     # alone is invisible to that lookup (CustomEvaluator does the same).
-    SUPPORTED_METRICS = {CONTEXT_RELEVANCE, CONTEXT_PRECISION, CONTEXT_RECALL}
+    # context_relevance is v4.0-era: compute path kept (historical runs stay
+    # reproducible) but dropped from default metric lists (T20).
+    SUPPORTED_METRICS = {
+        CONTEXT_RELEVANCE,
+        CONTEXT_PRECISION,
+        CONTEXT_RECALL,
+        FAITHFULNESS,
+        ANSWER_RELEVANCY,
+    }
 
     # Judge LLM is decoupled from the retrieval pipeline's settings.llm.
     # Configured via env vars so the judge is stable across provider swaps.
@@ -215,8 +223,9 @@ class RagasEvaluator(BaseEvaluator):
         Args:
             query: The user query string.
             retrieved_chunks: Retrieved chunks (dicts with 'text' key or strings).
-            generated_answer: Unused — this system does not generate answers.
-                Retained for BaseEvaluator interface compatibility.
+            generated_answer: Consumed by faithfulness / answer_relevancy
+                (T20 generation era). Missing/empty answer → those two
+                metrics are skipped with a warning, never a pseudo-0.0.
             ground_truth: Consumed for context_precision — the golden set's
                 reference answer is read from ``ground_truth["reference"]``
                 (forwarded by EvalRunner). context_relevance needs no ground truth.
@@ -232,17 +241,18 @@ class RagasEvaluator(BaseEvaluator):
         self.validate_query(query)
         self.validate_retrieved_chunks(retrieved_chunks)
 
-        # This system does not generate answers (retrieval + citation only).
-        # context_relevance needs no answer. context_precision needs a reference
-        # answer (ContextPrecisionWithReference); it is read from
-        # ground_truth["reference"], forwarded by EvalRunner from the golden
-        # set's reference_answer. Empty generated_answer is allowed.
+        # context_* metrics need no answer (precision/recall need a reference
+        # answer via ground_truth["reference"], forwarded by EvalRunner).
+        # faithfulness / answer_relevancy need the GENERATED answer; an empty
+        # one skips them rather than scoring garbage.
 
         contexts = self._extract_texts(retrieved_chunks)
         reference = self._extract_reference(ground_truth)
 
         try:
-            result = self._run_ragas(query, contexts, reference)
+            result = self._run_ragas(
+                query, contexts, reference, response=generated_answer,
+            )
         except Exception as exc:
             logger.error("Ragas evaluation failed: %s", exc, exc_info=True)
             raise RuntimeError(f"Ragas evaluation failed: {exc}") from exc
@@ -256,6 +266,7 @@ class RagasEvaluator(BaseEvaluator):
         query: str,
         contexts: List[str],
         reference: Optional[str],
+        response: str | None = None,
     ) -> Dict[str, float]:
         """Execute Ragas collections metrics and return normalised scores.
 
@@ -264,72 +275,124 @@ class RagasEvaluator(BaseEvaluator):
         - ContextPrecision (= ContextPrecisionWithReference):
           (user_input, retrieved_contexts, reference)
         - ContextRecall: (user_input, retrieved_contexts, reference)
+        - Faithfulness: (user_input, response, retrieved_contexts) — T20
+        - AnswerRelevancy: (user_input, response) — T20, needs embeddings
         """
         from ragas.metrics.collections import (
+            AnswerRelevancy,
             ContextRelevance,
             ContextPrecision,
             ContextRecall,
+            Faithfulness,
         )
 
         # Build the judge LLM wrapper from env-driven provider config
         llm = self._build_wrappers()
 
+        # Judge embeddings: only AnswerRelevancy consumes them — build lazily
+        # so retrieval-only metric mixes never require a local embedding model.
+        emb: Any = None
+
         scores: Dict[str, float] = {}
 
         for metric_name in self._metric_names:
-            if metric_name == CONTEXT_RELEVANCE:
-                m = ContextRelevance(llm=llm)
-                result = m.score(
-                    user_input=query, retrieved_contexts=contexts,
-                )
-            elif metric_name == CONTEXT_PRECISION:
-                m = ContextPrecision(llm=llm)
-                # ContextPrecisionWithReference ranks retrieved contexts by
-                # whether each is needed to answer the query, judged against the
-                # reference answer. Requires a non-empty reference. Missing
-                # reference → skip the metric entirely (absent key) — a recorded
-                # 0.0 is a pseudo-zero that drags the aggregate mean down.
-                if not reference:
-                    logger.warning(
-                        "context_precision skipped: no reference answer provided "
-                        "(golden set missing 'reference')."
+            # Per-metric isolation: a transport failure on ONE judge call
+            # (e.g. deepseek connect timeout under the 4-metric volume,
+            # first T20 run: 13/23 questions zeroed by single timeouts)
+            # excludes only that metric — never the whole question.
+            try:
+                if metric_name == CONTEXT_RELEVANCE:
+                    result = ContextRelevance(llm=llm).score(
+                        user_input=query, retrieved_contexts=contexts,
                     )
-                    continue
-                result = m.score(
-                    user_input=query,
-                    retrieved_contexts=contexts,
-                    reference=reference,
-                )
-            elif metric_name == CONTEXT_RECALL:
-                m = ContextRecall(llm=llm)
-                # ContextRecall decomposes the reference into atomic claims
-                # and scores the fraction supported by the retrieved contexts.
-                # Symmetric with precision: missing reference → warn + skip.
-                if not reference:
-                    logger.warning(
-                        "context_recall skipped: no reference answer provided "
-                        "(golden set missing 'reference')."
+                elif metric_name == CONTEXT_PRECISION:
+                    # ContextPrecisionWithReference ranks retrieved contexts
+                    # by whether each is needed to answer the query, judged
+                    # against the reference answer. Missing reference → skip
+                    # entirely (absent key) — a recorded 0.0 is a pseudo-zero
+                    # that drags the aggregate mean down.
+                    if not reference:
+                        logger.warning(
+                            "context_precision skipped: no reference answer "
+                            "provided (golden set missing 'reference')."
+                        )
+                        continue
+                    result = ContextPrecision(llm=llm).score(
+                        user_input=query,
+                        retrieved_contexts=contexts,
+                        reference=reference,
                     )
+                elif metric_name == CONTEXT_RECALL:
+                    # ContextRecall decomposes the reference into atomic
+                    # claims and scores the fraction supported by the
+                    # retrieved contexts. Symmetric with precision.
+                    if not reference:
+                        logger.warning(
+                            "context_recall skipped: no reference answer "
+                            "provided (golden set missing 'reference')."
+                        )
+                        continue
+                    result = ContextRecall(llm=llm).score(
+                        user_input=query,
+                        retrieved_contexts=contexts,
+                        reference=reference,
+                    )
+                elif metric_name == FAITHFULNESS:
+                    # Faithfulness decomposes the GENERATED response into
+                    # atomic statements and NLI-checks each against the
+                    # retrieved contexts. Missing response → skip (T10 rule).
+                    if not response:
+                        logger.warning(
+                            "faithfulness skipped: no generated answer provided."
+                        )
+                        continue
+                    result = Faithfulness(llm=llm).score(
+                        user_input=query,
+                        response=response,
+                        retrieved_contexts=contexts,
+                    )
+                elif metric_name == ANSWER_RELEVANCY:
+                    # AnswerRelevancy reverse-generates questions from the
+                    # response and cosine-compares them to the original
+                    # question — hence embeddings. Missing response → skip.
+                    if not response:
+                        logger.warning(
+                            "answer_relevancy skipped: no generated answer "
+                            "provided."
+                        )
+                        continue
+                    if emb is None:
+                        emb = self._build_judge_embeddings()
+                    result = AnswerRelevancy(llm=llm, embeddings=emb).score(
+                        user_input=query,
+                        response=response,
+                    )
+                else:
                     continue
-                result = m.score(
-                    user_input=query,
-                    retrieved_contexts=contexts,
-                    reference=reference,
-                )
-            else:
-                continue
 
-            # result.value can be None (metric produced nothing) or NaN/inf
-            # (e.g. 0/0 inside ragas when no statements parse). Either way the
-            # metric is excluded (absent key), never recorded as 0.0 — one NaN
-            # through sum/len would poison the whole aggregated metric.
-            raw = result.value
-            if raw is None:
-                logger.warning("%s produced no value; excluded from metrics.", metric_name)
-                continue
-            value = float(raw)
-            if not math.isfinite(value):
-                logger.warning("%s produced non-finite value %s; excluded.", metric_name, raw)
+                # result.value can be None (metric produced nothing) or NaN/inf
+                # (e.g. 0/0 inside ragas when no statements parse). Either way
+                # the metric is excluded (absent key), never recorded as 0.0 —
+                # one NaN through sum/len would poison the whole aggregate.
+                raw = result.value
+                if raw is None:
+                    logger.warning(
+                        "%s produced no value; excluded from metrics.",
+                        metric_name,
+                    )
+                    continue
+                value = float(raw)
+                if not math.isfinite(value):
+                    logger.warning(
+                        "%s produced non-finite value %s; excluded.",
+                        metric_name, raw,
+                    )
+                    continue
+            except Exception as exc:
+                logger.warning(
+                    "%s failed (%s: %s); excluded from metrics.",
+                    metric_name, type(exc).__name__, exc,
+                )
                 continue
             scores[metric_name] = value
 
@@ -401,7 +464,18 @@ class RagasEvaluator(BaseEvaluator):
             base_url = os.environ.get(
                 "RAGAS_JUDGE_BASE_URL", "https://api.deepseek.com"
             )
-            client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+            # T20 first-run lesson: the 4-metric stack issues ~7 judge calls
+            # per question (2-3x the v4.0 volume); the SDK-default short
+            # connect timeout + 2 retries dropped 13/23 questions to connect
+            # timeouts (D-028 throttle family at the new volume). Explicit
+            # longer connect window + more retries; reads can be slow too
+            # (statement extraction on long answers).
+            import httpx
+            client = AsyncOpenAI(
+                base_url=base_url, api_key=api_key,
+                timeout=httpx.Timeout(300.0, connect=15.0),
+                max_retries=4,
+            )
             llm = llm_factory(
                 self._resolve_judge_model(), client=client, max_tokens=8192,
                 cache=cache,
@@ -442,6 +516,40 @@ class RagasEvaluator(BaseEvaluator):
 
         return llm
 
+    # Judge-side embeddings: the ONLY local component of the judge stack —
+    # the judge LLM is cloud (deepseek), which has no embedding API (T20).
+    _DEFAULT_JUDGE_EMB_MODEL = "nomic-embed-text"
+
+    @classmethod
+    def _resolve_judge_emb_model(cls) -> str:
+        """Local embedding model for AnswerRelevancy (env-swappable)."""
+        return os.environ.get(
+            "RAGAS_JUDGE_EMB_MODEL", cls._DEFAULT_JUDGE_EMB_MODEL
+        )
+
+    def _build_judge_embeddings(self) -> Any:
+        """Build a ragas BaseRagasEmbedding backed by local Ollama.
+
+        Reuses ragas's modern OpenAIEmbeddings pointed at Ollama's
+        OpenAI-compatible /v1 endpoint (verified live: nomic-embed-text,
+        768-d, .wayfinder/tmp/t20_emb_verify.log). trust_env=False on the
+        httpx client bypasses the system proxy for localhost traffic (D-014).
+        Embeddings are deterministic — no judge cache on this side.
+        """
+        from openai import AsyncOpenAI
+        from ragas.embeddings import OpenAIEmbeddings
+
+        base_url = self._resolve_ollama_base_url()
+        # Same proxy bypass as the ollama judge branch (D-014).
+        import httpx
+        http_client = httpx.AsyncClient(trust_env=False, timeout=60.0)
+        client = AsyncOpenAI(
+            base_url=base_url, api_key="ollama", http_client=http_client,
+        )
+        return OpenAIEmbeddings(
+            client=client, model=self._resolve_judge_emb_model(),
+        )
+
     def _extract_texts(self, chunks: List[Any]) -> List[str]:
         """Extract text strings from various chunk representations.
 
@@ -476,3 +584,8 @@ class RagasEvaluator(BaseEvaluator):
             return []
         # Filter to only ragas-supported metrics
         return [m for m in raw_metrics if m.lower() in SUPPORTED_METRICS]
+
+
+# Module-level alias (single source = the class attribute; tests and
+# _metrics_from_settings import the name from either location).
+SUPPORTED_METRICS = RagasEvaluator.SUPPORTED_METRICS

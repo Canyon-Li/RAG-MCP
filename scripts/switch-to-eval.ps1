@@ -1,21 +1,20 @@
 <#
 .SYNOPSIS
-  Switch ollama's resident models to the EVAL set (nomic-embed-text only).
+  Switch ollama's resident models to the EVAL set (granite + nomic).
 
 .DESCRIPTION
-  Evaluation needs only:
-    - nomic-embed-text (dense embedding for HybridSearch)
-  The RAGAS judge is cloud DeepSeek (env-frozen, D-028 / T10 gauge
-  calibration), so NO local LLM is needed. The other installed models are
-  NOT used by evaluate.py and just tie up RAM:
-    - granite4.1:8b   (LLM — never called during eval; chunk_refiner /
-                       metadata_enricher have use_llm=false)
+  T20 era — evaluation is end-to-end (retrieve → generate → judge):
+    - nomic-embed-text (dense embedding for HybridSearch + AnswerRelevancy's
+      judge-side embedding — the judge's only local component)
+    - granite4.1:8b    (answer generation via settings.llm, temperature 0)
+  The RAGAS judge LLM is cloud DeepSeek (env-frozen, D-028 / T10). The one
+  model eval never calls and just ties up RAM:
     - qwen2.5vl-3b:latest (Vision — only used by ingest's ImageCaptioner)
 
   This script:
-    1. Immediately unloads granite + qwen2.5vl (don't wait for the 5m default).
-    2. Pre-warms nomic with a 30m keep-alive so the first query doesn't pay
-       the multi-second model-load cost and it stays resident across the
+    1. Immediately unloads qwen2.5vl (don't wait for the 5m default).
+    2. Pre-warms granite + nomic with a 30m keep-alive so the first query
+       doesn't pay the model-load cost and they stay resident across the
        whole eval run.
 
   Run this BEFORE `python scripts/evaluate.py ...`. Non-destructive: it only
@@ -35,7 +34,7 @@ if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     exit 2
 }
 
-Write-Host "Switching to EVAL mode..." -ForegroundColor Cyan
+Write-Host "Switching to EVAL mode (T20: generation era)..." -ForegroundColor Cyan
 
 # NOTE on the cmd /c wrapper: ollama's CLI renders a TUI and calls
 # GetConsoleMode on its stderr handle. PowerShell's `2>$null` redirects that
@@ -45,7 +44,7 @@ Write-Host "Switching to EVAL mode..." -ForegroundColor Cyan
 # error disappears while output is still silenced.
 
 # 1. Unload models eval doesn't use (free RAM for the eval loop).
-foreach ($m in @("granite4.1:8b", "qwen2.5vl-3b:latest")) {
+foreach ($m in @("qwen2.5vl-3b:latest")) {
     cmd /c "ollama stop $m >nul 2>nul"
     Write-Host "  unloaded: $m" -ForegroundColor DarkGray
 }
@@ -53,11 +52,11 @@ foreach ($m in @("granite4.1:8b", "qwen2.5vl-3b:latest")) {
 # 2. Pre-warm + keep resident. Feeding an empty line to `ollama run` via the
 #    cmd pipe makes it return immediately (no interactive prompt) while leaving
 #    the model loaded in RAM.
-foreach ($m in @("nomic-embed-text")) {
+foreach ($m in @("granite4.1:8b", "nomic-embed-text")) {
     cmd /c "echo.|ollama run $m --keepalive 30m >nul 2>nul"
     Write-Host "  resident: $m  (keepalive 30m)" -ForegroundColor Green
 }
 
 Write-Host ""
 Write-Host "Ready to evaluate:" -ForegroundColor Green
-Write-Host "  python scripts/evaluate.py --test-set tests/fixtures/golden_test_set.json --collection evaluation --top-k 5 --json" -ForegroundColor Green
+Write-Host "  python scripts/evaluate.py --test-set tests/fixtures/golden_test_set_ragas.jsonl --collection evaluation --top-k 5 --json" -ForegroundColor Green

@@ -75,6 +75,61 @@ class TestLoadTestSet:
             load_test_set(f)
 
 
+class TestLoadTestSetJsonl:
+    """T20: ragas-native SingleTurnSample jsonl (one sample per line).
+
+    The jsonl dialect is produced by ragas ``EvaluationDataset.to_jsonl``
+    (verified round-trip against ragas 0.4.3) and parsed here with stdlib
+    json only — importing ragas just to read two fields would drag its
+    vertexai stub into every eval_runner consumer.
+    """
+
+    def test_load_ragas_jsonl(self, tmp_path: Path) -> None:
+        f = tmp_path / "golden.jsonl"
+        f.write_text(
+            '{"user_input": "What is RAG?", "reference": "RAG is ..."}\n'
+            '{"user_input": "How does BM25 work?"}\n',
+            encoding="utf-8",
+        )
+
+        cases = load_test_set(f)
+
+        assert len(cases) == 2
+        assert cases[0].query == "What is RAG?"
+        assert cases[0].reference_answer == "RAG is ..."
+        assert cases[0].expected_chunk_ids == []
+        assert cases[0].expected_sources == []
+        assert cases[1].query == "How does BM25 work?"
+        assert cases[1].reference_answer is None
+
+    def test_jsonl_blank_lines_skipped(self, tmp_path: Path) -> None:
+        f = tmp_path / "golden.jsonl"
+        f.write_text(
+            '\n{"user_input": "q1"}\n\n\n{"user_input": "q2"}\n',
+            encoding="utf-8",
+        )
+
+        cases = load_test_set(f)
+
+        assert [c.query for c in cases] == ["q1", "q2"]
+
+    def test_jsonl_line_missing_user_input_raises(
+        self, tmp_path: Path,
+    ) -> None:
+        f = tmp_path / "golden.jsonl"
+        f.write_text('{"user_input": "q1"}\n{"reference": "no query"}\n',
+                     encoding="utf-8")
+
+        with pytest.raises(ValueError, match="line 2.*user_input"):
+            load_test_set(f)
+
+    def test_jsonl_empty_file_returns_empty_list(self, tmp_path: Path) -> None:
+        f = tmp_path / "golden.jsonl"
+        f.write_text("", encoding="utf-8")
+
+        assert load_test_set(f) == []
+
+
 # ── Tests: TestCase ───────────────────────────────────────────────
 
 
@@ -171,6 +226,40 @@ class TestEvalRunner:
 
         assert "Generated answer for: Q" == report.query_results[0].generated_answer
 
+    def test_failing_generator_yields_none_not_concat(self, tmp_path: Path) -> None:
+        """T20 decision: generation failure → generated_answer None so
+        answer-side metrics skip. The chunk-concat fallback would score
+        faithfulness ≈ 1.0 (the "answer" IS the context) and fake the gauge."""
+        f = tmp_path / "g.json"
+        _write_golden_json(f, [{"query": "Q"}])
+
+        def gen(query, chunks):
+            raise RuntimeError("ollama down")
+
+        runner = EvalRunner(evaluator=StubEvaluator(), answer_generator=gen)
+        report = runner.run(f)
+
+        assert report.query_results[0].generated_answer is None
+
+    def test_no_generator_falls_back_to_concat(self, tmp_path: Path) -> None:
+        """Legacy no-generator mode keeps its placeholder concatenation."""
+        f = tmp_path / "g.json"
+        _write_golden_json(f, [{"query": "Q"}])
+
+        mock_search = MagicMock()
+        mock_search.search.return_value = [
+            MagicMock(chunk_id="c1", text="chunk text", score=0.9),
+        ]
+
+        runner = EvalRunner(
+            hybrid_search=mock_search,
+            evaluator=StubEvaluator(),
+        )
+        report = runner.run(f)
+
+        answer = report.query_results[0].generated_answer
+        assert answer is not None and "chunk text" in answer
+
     def test_report_to_dict(self, tmp_path: Path) -> None:
         f = tmp_path / "g.json"
         _write_golden_json(f, [{"query": "Q"}])
@@ -256,6 +345,20 @@ class TestGoldenTestSetFixture:
         assert len(cases) >= 1
         for tc in cases:
             assert tc.query.strip(), "Query must be non-empty"
+
+    def test_ragas_jsonl_fixture_loads(self) -> None:
+        """T20: converted ragas-native fixture mirrors the v4.0 json set."""
+        jsonl_path = Path("tests/fixtures/golden_test_set_ragas.jsonl")
+        if not jsonl_path.exists():
+            pytest.skip("Ragas jsonl fixture not present")
+
+        jsonl_cases = load_test_set(jsonl_path)
+        json_cases = load_test_set("tests/fixtures/golden_test_set.json")
+
+        assert [c.query for c in jsonl_cases] == [c.query for c in json_cases]
+        assert [c.reference_answer for c in jsonl_cases] == [
+            c.reference_answer for c in json_cases
+        ]
 
 
 # ── Tests: EvalRunner source ground truth forwarding ────────────────
