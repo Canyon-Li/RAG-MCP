@@ -181,6 +181,13 @@ class ParserSettings:
     """
     provider: str
     extract_images: bool = True
+    # Optional override of the parser's conversion batching. ``0`` means a
+    # single unrestricted convert — the T23 corpus-integrity fix: docling's
+    # batched conversion (fresh converter per batch) loses sections
+    # intermittently, while single-batch conversion is deterministic and
+    # complete on machines with enough RAM (the batching was a 16 GB
+    # workaround). ``None`` keeps the parser's built-in default.
+    page_batch_size: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -232,6 +239,10 @@ class Settings:
                     extract_images=(
                         _require_bool(parser_cfg, "extract_images", "ingestion.parser")
                         if "extract_images" in parser_cfg else True
+                    ),
+                    page_batch_size=(
+                        _require_int(parser_cfg, "page_batch_size", "ingestion.parser")
+                        if "page_batch_size" in parser_cfg else None
                     ),
                 )
             elif "loader" in ingestion:

@@ -49,6 +49,7 @@
 | D-032 | 2026-08-29 | sparse_top_k 截尾 20→10：RRF 深尾票位移的零成本修复（T14 端到端：source_recall@5 → 1.000 满分） | 采纳 | tune/sparse-topk-truncation |
 | D-033 | 2026-08-29 | cross-encoder 重模型上 MCP stdio 的三层坑：包级 preload 不够（transformers 懒 import）、阻塞预热炸 initialize 握手、e2e 管道无人排空即冻结——主线程裸 import + 后台 warm 线程 + 语义键缓存 | 采纳 | feat/cross-encoder-rerank |
 | D-034 | 2026-08-29 | references 段 query 侧过滤：entry-density 检测 + 融合全池**剔出**（非降位——cross-encoder 重打分会洗掉降位）+ 回填要求融合不预截断 | 采纳 | feat/reference-section-filter |
+| D-035 | 2026-09-13 | docling 分批转换（16GB RAM workaround）同机间歇丢段 → `page_batch_size` 配置化并默认 0（单次完整转换，新机器内存足够且确定性可复现） | 采纳 | feat/t23-corpus-integrity |
 
 ---
 
@@ -291,6 +292,14 @@
 - **为什么不用别的**：① 降位（工单的第一选项）——被 rerank 洗掉，见上；② ingestion 侧 chunk_refiner 剔 references 文本——更彻底但是重灌类杠杆（纪律②：重灌三暗坑 T06）；③ 摘要/科普段一起降权——无可靠文本特征且 abstract 常是覆盖点，工单明确第一轮不做（留 T20，需逐题数据支撑）；④ LLM 判别 references 段——判官费+延迟+不确定，正则普查已零误伤。
 - **代价 / 现状**：A/B（对照 T15，判官缓存开）：确定性门全 PASS（recall@5 1.000 保持、prec@5 持平）；context_recall +1.1pt（q7 +25pt 单点救回，< 4.85pt 噪声底不作结论）、判官 precision −1.5pt（噪声内；q4 −33.3 但确定性 prec@5 +0.20，文件级 vs 内容级口径矛盾）。连锁位移风险面（回填改变重排池成分，4 题列表变了但不在侵入题集合）已被确定性门覆盖。配置默认开。
 - **关联**：[T19 Resolution](../.wayfinder/tickets/T19-reference-section-filter.md)；[hybrid_search.py](src/core/query_engine/hybrid_search.py)（全池融合→过滤→截断）；对照 [[D-032]]（同为 query 侧零重灌杠杆、同走单变量 A/B + 确定性门纪律）；侵入者机制归因见 [[D-033]] 所在的 T15。
+
+### D-035 docling 分批转换间歇丢段：page_batch_size 配置化，默认单次完整转换
+- **碰到**：[T23](../.wayfinder/tickets/T23-corpus-integrity-and-reingest.md) 修库先行重灌阶段——Interlacing 单篇 `--force` 重灌后完整性门仍报 p3 真缺失，且重放同文件（parse→chunker 不入库）产出 102 chunks vs 入库的 95。三条独立证据定位根因在 docling **分批转换**（每批新 `DocumentConverter`，`DEFAULT_PAGE_BATCH_SIZE=8`，本为 16GB RAM 的 std::bad_alloc workaround）：① traces.jsonl 里同一文件两次入库的 load stage `text_preview` 长度 52089 vs 68718（同机不同次）；② parse 之后的链条无丢失（transform/embed/upsert 全程 95/95/95）；③ 单批转换（`page_batch_size=0` → `[(1, None)]`）同机两次 digest 完全相同、5/5 探针全中、35 页长文 96s 无 bad_alloc。丢失形态 = 整段连续 section 消失（Interlacing p2–p3 连续 8 chunk），概率性、不可复现单一值——这解释了老库「尾部缺失」「表格页缺失」为何核验时有时无。
+- **行业做法**：docling 官方路径就是单次 `convert`；社区 bad_alloc 报告集中在小内存机器的长 PDF 预处理阶段。分批+每批新 converter 是社区针对小内存的 workaround 写法，不是官方推荐。
+- **我的解法**：`ingestion.parser.page_batch_size` 配置化——[settings.py](src/core/settings.py) `ParserSettings` 新增可选字段（`None` = 保持 parser 内建默认），[parser_factory.py](src/libs/parser/parser_factory.py) 仅在显式配置为 int 时透传（`isinstance` 防御，mock settings 对象不受影响）；[settings.yaml](config/settings.yaml) 默认置 `0`（单次完整转换）。tdd 红→绿（settings 解析 2 测 + factory 透传/省略 2 测）。
+- **为什么不用别的**：① 换 parser——实测 pdf_table（pdfplumber）确定性 PASS 但**内容更丢**（TABLE VIII 整表消失、9931 vs 11795 词，三线表抽不到）、pdf_text 10034 词探针 2/5，docling 的 DocLayNet+TableFormer 布局能力无可替代；② 保留分批 + 完整性门反复重灌到过为止——间歇性意味着结果不可控，每次 ~1min 门成本且无法预知下次重灌丢哪段，违反确定性原则；③ 修 docling 上游——不可控。单批的内存代价在新机器（换机 2026-08-29 后）实测可承受（35p/96s 转换成功）。
+- **代价 / 现状**：老机器若复用本 repo 需把该值改回 8（config 单行可逆，但会重新暴露间歇丢段）；单批峰值内存高于分批。现状：6 篇全库重灌（vision off）671 chunks，完整性门 ALL GREEN（真缺失 0，119 页 = 108 在库 + 1 空图页 + 10 图页标注层另计），S1 chroma/bm25 对齐。重灌后 619→671，v4.0 全部 run 封存为历史。
+- **关联**：[T23 Resolution](../.wayfinder/tickets/T23-corpus-integrity-and-reingest.md)；完整性门脚本 `.wayfinder/tmp/t23_integrity_gate.py`（6 篇 × 全页特征串验证 + S1 口径，单用途重灌后验证）；同场发现 chroma 同前缀重灌不删旧 chunk 孤儿（78 个手动清，T16/D-031 家族 chroma 侧残留）。
 
 ---
 

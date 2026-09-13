@@ -174,6 +174,28 @@ class TestParserFactoryCreate:
         parser = ParserFactory.create(self._settings("fake", extract_images=False), collection="c")
         assert parser.extract_images is False
 
+    def test_create_passes_page_batch_size(self):
+        """Factory should forward parser.page_batch_size to the provider (T23).
+
+        0 = single unrestricted docling conversion — the T23 corpus-integrity
+        fix for batched-conversion content loss.
+        """
+        ParserFactory.register_provider("fake", FakeParser)
+
+        settings = self._settings("fake")
+        settings.ingestion.parser.page_batch_size = 0
+        parser = ParserFactory.create(settings, collection="c")
+        assert parser.init_kwargs.get("page_batch_size") == 0
+
+    def test_create_omits_page_batch_size_when_unset(self):
+        """Unconfigured page_batch_size must not leak into provider kwargs."""
+        ParserFactory.register_provider("fake", FakeParser)
+
+        settings = self._settings("fake")
+        del settings.ingestion.parser.page_batch_size
+        parser = ParserFactory.create(settings, collection="c")
+        assert "page_batch_size" not in parser.init_kwargs
+
     def test_create_unknown_provider(self):
         """An unregistered provider should raise a clear ValueError."""
         ParserFactory.register_provider("fake", FakeParser)

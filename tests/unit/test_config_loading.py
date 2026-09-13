@@ -111,3 +111,77 @@ def test_missing_required_field_raises_error(tmp_path: Path) -> None:
 
     with pytest.raises(SettingsError, match="embedding.provider"):
         load_settings(settings_path)
+
+def _minimal_config(parser_block: str) -> str:
+    """Minimal valid config with a swappable ingestion.parser block."""
+    return f"""
+    llm:
+      provider: openai
+      model: gpt-4o-mini
+      temperature: 0.0
+      max_tokens: 1024
+    embedding:
+      provider: openai
+      model: text-embedding-3-small
+      dimensions: 1536
+    vector_store:
+      provider: chroma
+      persist_directory: ./data/db/chroma
+      collection_name: knowledge_hub
+    retrieval:
+      dense_top_k: 20
+      sparse_top_k: 20
+      fusion_top_k: 10
+      rrf_k: 60
+    rerank:
+      enabled: false
+      provider: none
+      model: none
+      top_k: 5
+    evaluation:
+      enabled: false
+      provider: custom
+      metrics: [hit_rate]
+    observability:
+      log_level: INFO
+      trace_enabled: true
+      trace_file: ./logs/traces.jsonl
+      structured_logging: true
+    ingestion:
+      chunk_size: 1000
+      chunk_overlap: 200
+      splitter: recursive
+      batch_size: 100
+      parser:
+{parser_block}
+    """
+
+
+def test_parser_page_batch_size_parsed(tmp_path: Path) -> None:
+    """ingestion.parser.page_batch_size is optional; 0 = single convert (T23)."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config("        provider: docling\n        extract_images: true\n        page_batch_size: 0"),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    assert settings.ingestion.parser.page_batch_size == 0
+
+
+def test_parser_page_batch_size_defaults_to_none(tmp_path: Path) -> None:
+    """Without the key the parser keeps its built-in default batching."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config("        provider: docling\n        extract_images: true"),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    assert settings.ingestion.parser.page_batch_size is None

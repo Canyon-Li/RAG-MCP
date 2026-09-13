@@ -109,6 +109,7 @@ ingestion:
   parser:
     provider: "docling"  # 默认 parser = Docling（DocLayNet + TableFormer）；矢量图 bbox 渲染见 D-019，降级链 docling→pdf_text 见 D-011
     extract_images: true  # extract embedded images, insert [IMAGE: id] placeholders
+    page_batch_size: 0  # T23: 单次完整转换——分批转换（每批新 converter）同机间歇丢段；单批确定且完整（新机器内存足够；分批本是 16GB RAM workaround）
 
   chunk_refiner:
     use_llm: false  # 策略 C:先关 LLM 精炼层(溯源优先确定性),规则去噪层仍恒执行;不满意再开

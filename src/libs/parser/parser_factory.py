@@ -116,12 +116,22 @@ class ParserFactory:
         from src.core.settings import resolve_path
 
         image_storage_dir = str(resolve_path(f"data/images/{collection}"))
+        # T23: optional conversion-batching override (0 = single convert —
+        # batched docling conversion loses sections intermittently). Only
+        # forwarded when explicitly configured as an int, so unconfigured
+        # settings objects (and mocks) keep the parser's built-in default.
+        extra_kwargs: dict = {}
+        if parser_cfg is not None:
+            page_batch_size = getattr(parser_cfg, "page_batch_size", None)
+            if isinstance(page_batch_size, int):
+                extra_kwargs["page_batch_size"] = page_batch_size
         try:
             return provider_class(
                 settings=settings,
                 collection=collection,
                 image_storage_dir=image_storage_dir,
                 extract_images=extract_images,
+                **extra_kwargs,
             )
         except Exception as e:
             raise RuntimeError(
