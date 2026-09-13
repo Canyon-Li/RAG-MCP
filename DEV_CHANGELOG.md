@@ -156,6 +156,7 @@
 - **我的解法**：前缀计算收敛为 `VectorUpserter.chunk_id_prefix(source_path)` 单一真相源（`_generate_chunk_id` 与 pipeline 6b 共用同一函数，杜绝双写漂移）；pipeline 传 `doc_id=chunk_id_prefix(chunks[0].metadata["source_path"])`；新增重灌幂等回归单测 [test_pipeline_bm25_reingest.py](tests/unit/test_pipeline_bm25_reingest.py)——同路径连灌两次、第二次内容漂移，断言 unique 精确替换（比「不涨」更严）、`num_docs == unique`、无重复 posting、旧版本 chunk 全消失。数据不回填（evaluation 库 T13 已修好；`t13_repair.py` 保留应急）。
 - **为什么不用别的**：① 从 `vector_ids` 提取字符串公共前缀——依赖 ID 格式（分隔符/位数）的字符串结构知识，格式一变即静默失效；重算复用生成函数本身，格式知识只存在一处。② 改 `add_documents` 直接收 chunks 或维护 doc→chunk 映射表——改动面远超防御性修复。③ 同族 bug（`document_manager.delete_document` 同样把内容哈希传给 `remove_document`，删除路径永不命中）**有意不在本单修**——重灌与显式删除是不同验证面，拆 [T17](../.wayfinder/tickets/T17-bm25-delete-prefix-bug.md)。④ 路径哈希跨机/跨目录漂移不解决——改它 = 换全套 id 方案，代价远超收益（工单边界：本决策只保证「同路径重灌」幂等）。
 - **关联**：[pipeline.py](src/ingestion/pipeline.py)（6b）；[vector_upserter.py](src/ingestion/storage/vector_upserter.py)（chunk_id_prefix）；[bm25_indexer.py](src/ingestion/storage/bm25_indexer.py)（doc_id 契约 docstring）。根因发现链：[[D-027]]（docling 重解析漂移，同族暗坑第一环）→ T13 → 本条。
+- **追记（2026-09-13，T17 同族第二处落地）**：删除路径同样修复——`DocumentManager.delete_document` 的 BM25 传参由内容哈希换 `chunk_id_prefix(source_path)`（本条单一真相源直接复用）；此前失效是**静默**的（`DeleteResult.success` 照旧 True，dashboard 报已删除而 sparse 行常驻）；单测 [test_document_manager_delete.py](tests/unit/test_document_manager_delete.py) 双文档场景红→绿。同根因同修法，不开新条目。
 
 ### D-032 sparse_top_k 截尾 20→10：RRF 深尾票位移的零成本修复
 
