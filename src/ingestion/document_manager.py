@@ -16,6 +16,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from src.ingestion.storage.vector_upserter import VectorUpserter
+
 logger = logging.getLogger(__name__)
 
 
@@ -236,9 +238,14 @@ class DocumentManager:
             result.errors.append(f"ChromaDB delete failed: {e}")
 
         # 2. BM25 – remove postings for this document
+        # doc_id must be the chunk-ID prefix (sha256(source_path)[:8]),
+        # NOT the content hash — remove_document matches on
+        # chunk_id.startswith(doc_id), and a content hash never
+        # matches, leaving stale postings behind on delete (T16 family,
+        # delete path).
         try:
             result.bm25_removed = self.bm25.remove_document(
-                source_hash, collection
+                VectorUpserter.chunk_id_prefix(source_path), collection
             )
         except Exception as e:
             result.errors.append(f"BM25 remove failed: {e}")
