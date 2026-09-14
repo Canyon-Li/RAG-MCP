@@ -114,13 +114,17 @@ class EvalReport:
 def load_test_set(path: str | Path) -> List[GoldenTestCase]:
     """Load golden test set from a JSON or ragas-native jsonl file.
 
-    Two dialects, selected by file suffix:
+    Three dialects, selected by file suffix + top-level shape:
 
-    - ``.json`` — the v1/v4.0 house format (``{"test_cases": [...]}``).
     - ``.jsonl`` — ragas ``SingleTurnSample`` per line (what
       ``EvaluationDataset.to_jsonl`` writes; verified round-trip against
       ragas 0.4.3). Parsed with stdlib json — importing ragas just to read
       two fields would drag its vertexai import-stub into every consumer.
+    - ``.json`` top-level array — the v5.0 exam (T21): an indented JSON
+      array of ragas ``SingleTurnSample`` dicts written by the synthesis
+      finaliser. Same per-sample mapping as the jsonl dialect.
+    - ``.json`` top-level dict — the v1/v4.0 house format
+      (``{"test_cases": [...]}``).
 
     Args:
         path: Path to the golden test set file.
@@ -141,6 +145,9 @@ def load_test_set(path: str | Path) -> List[GoldenTestCase]:
 
     with file_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
+
+    if isinstance(data, list):
+        return _load_test_set_json_array(file_path, data)
 
     if "test_cases" not in data:
         raise ValueError(
@@ -180,6 +187,31 @@ def _load_test_set_jsonl(file_path: Path) -> list[GoldenTestCase]:
                     reference_answer=sample.get("reference") or None,
                 )
             )
+    return cases
+
+
+def _load_test_set_json_array(
+    file_path: Path, data: list[Any],
+) -> list[GoldenTestCase]:
+    """Load a ragas SingleTurnSample JSON array (the v5.0 exam, T21).
+
+    Same field mapping as the jsonl dialect: ``user_input`` → query,
+    ``reference`` → reference_answer; everything else belongs to the
+    ragas scoring pipeline and is ignored.
+    """
+    cases: list[GoldenTestCase] = []
+    for idx, sample in enumerate(data):
+        if not isinstance(sample, dict) or not sample.get("user_input"):
+            raise ValueError(
+                f"Invalid sample at index {idx} of {file_path}: "
+                "missing 'user_input'"
+            )
+        cases.append(
+            GoldenTestCase(
+                query=sample["user_input"],
+                reference_answer=sample.get("reference") or None,
+            )
+        )
     return cases
 
 

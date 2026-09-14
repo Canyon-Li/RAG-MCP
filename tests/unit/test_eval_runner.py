@@ -130,6 +130,59 @@ class TestLoadTestSetJsonl:
         assert load_test_set(f) == []
 
 
+class TestLoadTestSetJsonArray:
+    """T21: ragas SingleTurnSample array as an indented .json file.
+
+    The v5.0 exam is a top-level JSON array (pretty-printed, one object
+    per question) written by the synthesis finaliser — same per-sample
+    fields as the jsonl dialect. The existing dict dialect
+    (``{"test_cases": [...]}``) must keep working unchanged.
+    """
+
+    def test_load_ragas_json_array(self, tmp_path: Path) -> None:
+        f = tmp_path / "golden_test_set_v5.json"
+        f.write_text(
+            json.dumps([
+                {"user_input": "What is RAG?", "reference": "RAG is ...",
+                 "reference_contexts": ["ctx"]},
+                {"user_input": "How does BM25 work?"},
+            ], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        cases = load_test_set(f)
+
+        assert len(cases) == 2
+        assert cases[0].query == "What is RAG?"
+        assert cases[0].reference_answer == "RAG is ..."
+        assert cases[0].expected_chunk_ids == []
+        assert cases[0].expected_sources == []
+        assert cases[1].query == "How does BM25 work?"
+        assert cases[1].reference_answer is None
+
+    def test_array_entry_missing_user_input_raises(
+        self, tmp_path: Path,
+    ) -> None:
+        f = tmp_path / "golden_test_set_v5.json"
+        f.write_text(
+            json.dumps([
+                {"user_input": "q1"},
+                {"reference": "no query"},
+            ], indent=2),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match=r"index 1.*user_input"):
+            load_test_set(f)
+
+    def test_array_must_hold_objects(self, tmp_path: Path) -> None:
+        f = tmp_path / "golden_test_set_v5.json"
+        f.write_text(json.dumps(["not an object"]), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="index 0"):
+            load_test_set(f)
+
+
 # ── Tests: TestCase ───────────────────────────────────────────────
 
 
