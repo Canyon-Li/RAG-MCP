@@ -16,24 +16,6 @@ Design Principles:
 
 from __future__ import annotations
 
-# ── ragas 0.4.3 import workaround ──────────────────────────────────
-# ragas eagerly imports langchain_community.chat_models.vertexai during its
-# own import; that package is not installed here. Inject a stub so the import
-# succeeds. (Mirrors the agentic-rag-for-dummies evaluation notebook.)
-import sys as _sys
-import types as _types
-try:  # pragma: no cover — only triggers when langchain_community is missing vertexai
-    import langchain_community.chat_models.vertexai  # type: ignore  # noqa: F401
-except ModuleNotFoundError:  # pragma: no cover
-    if "langchain_community.chat_models.vertexai" not in _sys.modules:
-        _stub = _types.ModuleType("langchain_community.chat_models.vertexai")
-
-        class _ChatVertexAI:  # minimal stub
-            pass
-
-        _stub.ChatVertexAI = _ChatVertexAI  # type: ignore
-        _sys.modules["langchain_community.chat_models.vertexai"] = _stub
-
 import logging
 import math
 import os
@@ -41,6 +23,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
+from src.observability.evaluation.ragas_compat import (
+    build_deepseek_client,
+    install_vertexai_stub,
+)
+
+# ── ragas 0.4.3 import workaround ──────────────────────────────────
+# Stub installed at module import so ragas's lazy imports (inside
+# _run_ragas) never see the missing vertexai package. The stub itself
+# lives in ragas_compat, shared with the T21 synthesis script.
+install_vertexai_stub()
 
 logger = logging.getLogger(__name__)
 
@@ -451,31 +443,17 @@ class RagasEvaluator(BaseEvaluator):
 
         if judge_provider == "deepseek":
             # Cloud judge via DeepSeek's OpenAI-compatible endpoint.
-            # NOTE: unlike the ollama branch, trust_env is deliberately NOT
-            # disabled here — deepseek is a REMOTE endpoint, so going through
-            # the system proxy is the correct path (D-014 only applies to
-            # localhost traffic).
-            api_key = os.environ.get("DEEPSEEK_API_KEY")
-            if not api_key:
+            # trust_env deliberately NOT disabled — deepseek is a REMOTE
+            # endpoint, going through the system proxy is correct (D-014
+            # only applies to localhost). Transport params (T20 timeouts/
+            # retries rationale) live in ragas_compat.build_deepseek_client,
+            # shared with the T21 synthesiser so a retune lands in both.
+            if not os.environ.get("DEEPSEEK_API_KEY"):
                 raise ValueError(
                     "RAGAS_JUDGE_PROVIDER=deepseek but DEEPSEEK_API_KEY "
                     "is not set"
                 )
-            base_url = os.environ.get(
-                "RAGAS_JUDGE_BASE_URL", "https://api.deepseek.com"
-            )
-            # T20 first-run lesson: the 4-metric stack issues ~7 judge calls
-            # per question (2-3x the v4.0 volume); the SDK-default short
-            # connect timeout + 2 retries dropped 13/23 questions to connect
-            # timeouts (D-028 throttle family at the new volume). Explicit
-            # longer connect window + more retries; reads can be slow too
-            # (statement extraction on long answers).
-            import httpx
-            client = AsyncOpenAI(
-                base_url=base_url, api_key=api_key,
-                timeout=httpx.Timeout(300.0, connect=15.0),
-                max_retries=4,
-            )
+            client = build_deepseek_client()
             llm = llm_factory(
                 self._resolve_judge_model(), client=client, max_tokens=8192,
                 cache=cache,
