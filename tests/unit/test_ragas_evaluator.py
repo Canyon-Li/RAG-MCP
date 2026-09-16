@@ -549,6 +549,10 @@ class TestBuildWrappersDeepseekBranch:
         monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
         # T11: cache off — this test pins the exact llm_factory kwargs
         monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
+        # T22: judge params resolve from env with frozen defaults — delenv
+        # so the pinned kwargs below reflect the defaults, not outer env.
+        monkeypatch.delenv("RAGAS_JUDGE_MAX_TOKENS", raising=False)
+        monkeypatch.delenv("RAGAS_JUDGE_THINKING", raising=False)
 
         # Bypass __init__ (which calls _import_ragas) and set a MagicMock
         # settings so the `settings is None` guard passes.
@@ -567,7 +571,8 @@ class TestBuildWrappersDeepseekBranch:
         assert kwargs["base_url"] == "https://api.deepseek.com"
         mock_factory.assert_called_once_with(
             "deepseek-v4-flash", client=mock_client_cls.return_value,
-            max_tokens=8192, cache=None,
+            max_tokens=16384, cache=None,
+            extra_body={"thinking": {"type": "disabled"}},
         )
         # embeddings 清理后返回单值 llm
         assert result is mock_factory.return_value
@@ -618,6 +623,136 @@ class TestBuildWrappersDeepseekBranch:
             result = evaluator._build_wrappers()
 
         assert result is mock_factory.return_value
+
+
+class TestJudgeParamsT22:
+    """T22: judge max_tokens / thinking parameterisation (gauge freeze).
+
+    T20 lesson: the faithfulness decomposition of number-dense answers
+    overflowed the hardcoded max_tokens=8192 (IncompleteOutputException —
+    decomposition inflation, NOT answer length). T21 lesson: deepseek-flash
+    defaults thinking ON (billed reasoning tokens, slower). Both frozen at
+    the T22 baseline: 16384 + thinking off, env-swappable for rollback
+    without code edits. Changing max_tokens auto-invalidates the judge
+    DiskCache (the cache key includes it) — expected, baseline runs are
+    --no-judge-cache anyway.
+    """
+
+    # ── max_tokens resolution ──────────────────────────────────────
+
+    def test_max_tokens_default_16384(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.delenv("RAGAS_JUDGE_MAX_TOKENS", raising=False)
+        assert RagasEvaluator._resolve_judge_max_tokens() == 16384
+
+    def test_max_tokens_env_override(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_MAX_TOKENS", "12000")
+        assert RagasEvaluator._resolve_judge_max_tokens() == 12000
+
+    @pytest.mark.parametrize("bad", ["abc", "0", "-5", "8.5"])
+    def test_max_tokens_invalid_raises(self, monkeypatch, bad) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_MAX_TOKENS", bad)
+        with pytest.raises(ValueError, match="RAGAS_JUDGE_MAX_TOKENS"):
+            RagasEvaluator._resolve_judge_max_tokens()
+
+    def test_max_tokens_whitespace_means_unset(self, monkeypatch) -> None:
+        """Whitespace-only value strips to empty → treated as unset (default),
+        not garbage: the strip-to-empty-as-unset convention."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_MAX_TOKENS", "   ")
+        assert RagasEvaluator._resolve_judge_max_tokens() == 16384
+
+    # ── thinking resolution ────────────────────────────────────────
+
+    def test_thinking_default_off(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.delenv("RAGAS_JUDGE_THINKING", raising=False)
+        assert RagasEvaluator._resolve_judge_thinking() == {
+            "thinking": {"type": "disabled"},
+        }
+
+    def test_thinking_on_maps_enabled(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_THINKING", "on")
+        assert RagasEvaluator._resolve_judge_thinking() == {
+            "thinking": {"type": "enabled"},
+        }
+
+    def test_thinking_invalid_raises(self, monkeypatch) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_THINKING", "maybe")
+        with pytest.raises(ValueError, match="RAGAS_JUDGE_THINKING"):
+            RagasEvaluator._resolve_judge_thinking()
+
+    # ── wiring into llm_factory ────────────────────────────────────
+
+    def test_deepseek_branch_env_override_params(self, monkeypatch) -> None:
+        """RAGAS_JUDGE_MAX_TOKENS / RAGAS_JUDGE_THINKING override the frozen
+        defaults end-to-end into the llm_factory call."""
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "deepseek")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-123")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
+        monkeypatch.setenv("RAGAS_JUDGE_MAX_TOKENS", "12000")
+        monkeypatch.setenv("RAGAS_JUDGE_THINKING", "on")
+
+        evaluator = RagasEvaluator.__new__(RagasEvaluator)
+        evaluator.settings = MagicMock()
+        with patch("ragas.llms.llm_factory") as mock_factory, \
+             patch("openai.AsyncOpenAI") as mock_client_cls:
+            mock_client_cls.return_value = MagicMock()
+            evaluator._build_wrappers()
+
+        kwargs = mock_factory.call_args.kwargs
+        assert kwargs["max_tokens"] == 12000
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+    def test_ollama_branch_forwards_no_thinking(self, monkeypatch) -> None:
+        """thinking rides extra_body — a deepseek-specific param. The ollama
+        branch must not forward it (foreign endpoints may reject unknown
+        params). max_tokens IS shared: the 8192 overflow was judge-side,
+        provider-independent."""
+        import sys as _sys
+
+        monkeypatch.setenv("RAGAS_JUDGE_PROVIDER", "ollama")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        monkeypatch.setenv("RAGAS_JUDGE_CACHE", "0")
+        monkeypatch.delenv("RAGAS_JUDGE_MAX_TOKENS", raising=False)
+        monkeypatch.delenv("RAGAS_JUDGE_THINKING", raising=False)
+
+        mock_llms_mod = MagicMock()
+        mock_llms_mod.llm_factory = MagicMock(name="ragas_llm_factory_fn")
+        ragas_stubs = {
+            "ragas": MagicMock(),
+            "ragas.llms": mock_llms_mod,
+            "ragas.llms.base": MagicMock(),
+        }
+
+        with patch.dict(_sys.modules, ragas_stubs, clear=False), \
+             patch("openai.AsyncOpenAI"):
+            from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+            settings = MagicMock()
+            settings.llm.provider = "ollama"
+            settings.embedding.provider = "ollama"
+
+            evaluator = RagasEvaluator.__new__(RagasEvaluator)
+            evaluator.settings = settings
+            evaluator._build_wrappers()
+
+        kwargs = mock_llms_mod.llm_factory.call_args.kwargs
+        assert "extra_body" not in kwargs
+        assert kwargs["max_tokens"] == 16384
 
 
 class TestAnswerSideMetrics:
