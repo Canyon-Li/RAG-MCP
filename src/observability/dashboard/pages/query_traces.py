@@ -416,7 +416,9 @@ def _retrieve_chunks(
 
         # Retrieve more candidates if rerank is enabled
         reranker = create_core_reranker(settings=settings)
-        initial_top_k = top_k * 2 if reranker.is_enabled else top_k
+        pool_multiplier = getattr(
+            hybrid_search.config, 'rerank_pool_multiplier', 2)
+        initial_top_k = top_k * pool_multiplier if reranker.is_enabled else top_k
 
         results = hybrid_search.search(query=query, top_k=initial_top_k)
         results = results if isinstance(results, list) else results.results

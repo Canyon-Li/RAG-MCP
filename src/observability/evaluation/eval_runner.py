@@ -410,7 +410,9 @@ class EvalRunner:
         try:
             # Retrieve more candidates if reranker is enabled
             has_reranker = self.reranker is not None and getattr(self.reranker, 'is_enabled', False)
-            initial_top_k = top_k * 2 if has_reranker else top_k
+            pool_multiplier = getattr(
+                self.hybrid_search.config, 'rerank_pool_multiplier', 2)
+            initial_top_k = top_k * pool_multiplier if has_reranker else top_k
 
             results = self.hybrid_search.search(
                 query=query,

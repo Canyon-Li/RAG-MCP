@@ -93,6 +93,9 @@ class HybridSearchConfig:
     parallel_retrieval: bool = True
     metadata_filter_post: bool = True
     filter_references: bool = False  # T19: drop references-section chunks post-fusion
+    # T22 D1: 调用方取 top_k × multiplier 作为送重排的候选池深度
+    # （原先 eval/MCP/dashboard 三处硬编码 ×2）。缺省 2 = 旧行为。
+    rerank_pool_multiplier: int = 2
 
 
 @dataclass
@@ -215,6 +218,8 @@ class HybridSearch:
             parallel_retrieval=True,
             metadata_filter_post=True,
             filter_references=bool(getattr(retrieval_config, 'filter_references', False)),
+            rerank_pool_multiplier=int(getattr(
+                retrieval_config, 'rerank_pool_multiplier', 2)),
         )
     
     def search(
