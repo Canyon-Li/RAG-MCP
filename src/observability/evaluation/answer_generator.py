@@ -4,7 +4,7 @@ Turns (query, retrieved chunks) into a grounded answer via the configured
 ``settings.llm`` — local Ollama granite at temperature 0 — so evaluation
 exercises the same retrieve → generate shape the MCP tool exposes. The
 prompt lives in ``config/prompts/rag_answer.txt`` (grounding / no-fabrication
-/ source-citation rules; edit there, not here).
+rules; edit there, not here).
 
 Failure policy: an LLM failure returns ``None`` — EvalRunner then skips the
 answer-side metrics for that query. Falling back to concatenated chunks
@@ -26,11 +26,6 @@ from src.libs.llm.llm_factory import LLMFactory
 logger = logging.getLogger(__name__)
 
 DEFAULT_PROMPT_PATH = "config/prompts/rag_answer.txt"
-
-# Source fields mirrored from CustomEvaluator._SOURCE_FIELDS — the real
-# EvalRunner path is RetrievalResult.metadata["source_path"]; dicts carry
-# source/source_path directly (trace snapshots, tests).
-_SOURCE_FIELDS = ("source", "source_path")
 
 
 class RagAnswerGenerator:
@@ -73,17 +68,20 @@ class RagAnswerGenerator:
 
     @staticmethod
     def _assemble_context(chunks: list[Any]) -> str:
-        """Number the passages and attribute each to its source basename.
+        """Number the passages; no source labels.
 
-        Passage numbering backs the prompt's conflict rule (rag_answer.txt
-        rule 3: report each version, noting which passage it came from);
-        answer-side citation formatting is deferred work (2026-09-13).
+        T22 (2026-09-15): the previous "[i] (Source: basename)" format was
+        the mechanical source of citation welding — granite mirrors the
+        assembled format, and file names inside answer statements are
+        unverifiable for the faithfulness judge (old-exam q20 scored 0.00
+        on all-factual, welded content). Passage numbering stays: it backs
+        the prompt's conflict rule (report each version separately).
+        Answer-side source citation remains deferred work (2026-09-13) —
+        when it lands, attribution must be deliberate, not mirrored.
         """
         blocks: list[str] = []
         for i, chunk in enumerate(chunks, 1):
-            text = _chunk_text(chunk)
-            source = _chunk_source(chunk)
-            blocks.append(f"[{i}] (Source: {source})\n{text}")
+            blocks.append(f"[{i}]\n{_chunk_text(chunk)}")
         return "\n\n".join(blocks)
 
 
@@ -96,24 +94,6 @@ def _chunk_text(chunk: Any) -> str:
     if hasattr(chunk, "text"):
         return str(getattr(chunk, "text"))
     return str(chunk)
-
-
-def _chunk_source(chunk: Any) -> str:
-    """Extract a display source name (basename) from a chunk."""
-    raw: str | None = None
-    if isinstance(chunk, dict):
-        for field in _SOURCE_FIELDS:
-            if chunk.get(field):
-                raw = str(chunk[field])
-                break
-    elif hasattr(chunk, "metadata") and isinstance(chunk.metadata, dict):
-        for field in _SOURCE_FIELDS:
-            if chunk.metadata.get(field):
-                raw = str(chunk.metadata[field])
-                break
-    if not raw:
-        return "unknown"
-    return Path(raw.replace("\\", "/")).name or "unknown"
 
 
 def build_answer_generator(
