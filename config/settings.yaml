@@ -6,15 +6,16 @@
 # LLM Configuration
 # =============================================================================
 llm:
-  provider: "ollama"  # 本地 LLM（绝对本地/防泄露）；granite4.1:8b 决策见场景适配 spec
-  model: "granite4.1:8b"
+  provider: "deepseek"  # T22 暂时切换（2026-09-15）：granite4.1:8b → deepseek-flash，
+                        # 生成端质量实验（拒答/记忆填充家族）；git 可回滚回 ollama/granite4.1:8b
+  model: "deepseek-flash"
   deployment_name: ""
   azure_endpoint: ""
   api_version: ""
-  api_key: ""  # 本地 ollama 无需 key
-  base_url: "http://localhost:11434/v1"  # /v1 供 vision/embedding 的 OpenAI 兼容端点;text OllamaLLM 自动剥 /v1 用原生 /api/chat。三个 ollama 模块均 trust_env=False 绕系统代理(D-014)
+  api_key: ""  # 留空走 DEEPSEEK_API_KEY 环境变量（.env，evaluate.py 会 load_dotenv）
+  base_url: "https://api.deepseek.com"
   temperature: 0.0
-  max_tokens: 4096
+  max_tokens: 8192  # 思考默认开（OpenAILLM 不透传 extra_body 关不掉）——推理 token 吃生成额度，必须放大
 
 # =============================================================================
 # Embedding Configuration
@@ -55,11 +56,12 @@ vector_store:
 # Retrieval Configuration
 # =============================================================================
 retrieval:
-  dense_top_k: 20
-  sparse_top_k: 10  # T14: 20→10——RRF 下 sparse 11–20 深尾票净伤害（T03 探针：recall@5→1.000、prec@5 +1.74pt），截尾消位移保共识
+  dense_top_k: 40  # T22 D1: 20→40——浅漏检主张的 home 排 21~46 名，加深 dense 捞回（模拟 +3 条/0 丢失）
+  sparse_top_k: 35  # T22 D1: 10→35——T14 截尾结论针对池 10 场景，D1 大池下按扫描赢家同步加深
   fusion_top_k: 10
   rrf_k: 60
   filter_references: true  # T19: query 侧 references 段过滤——融合全池检测剔出后再截断（rerank 重打分会洗掉降位，必须剔出+回填）；治 q7/q4 型参考文献段侵入
+  rerank_pool_multiplier: 5  # T22 D1: 重排候选池 = 最终 top_k×5（原三处硬编码 ×2 → 池 10，现池 25）；不写此 key = 缺省 2 = 旧行为
 
 # =============================================================================
 # Rerank Configuration (T15: cross-encoder enabled)

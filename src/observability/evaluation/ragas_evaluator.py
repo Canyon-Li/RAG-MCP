@@ -113,6 +113,61 @@ class RagasEvaluator(BaseEvaluator):
         """
         return os.environ.get("RAGAS_JUDGE_MODEL", cls._DEFAULT_JUDGE_MODEL)
 
+    # T22: judge output cap, frozen at the v5.0 baseline (2026-09-14).
+    # Was hardcoded 8192 in every branch — the faithfulness decomposition
+    # of number-dense answers overflowed it (T20 lesson: decomposition
+    # inflation, no monotonic relation to answer length; 16384 headroom
+    # proven by the T21 synthesiser on the same model). Env-swappable so
+    # a rollback/A-B needs no code edit. Changing it auto-invalidates the
+    # judge DiskCache (the cache key includes it) — expected.
+    _DEFAULT_JUDGE_MAX_TOKENS = 16384
+
+    @classmethod
+    def _resolve_judge_max_tokens(cls) -> int:
+        """Judge completion cap: RAGAS_JUDGE_MAX_TOKENS env > 16384 default.
+
+        Fail-fast on garbage: a typo'd value silently falling back to the
+        default would label the run with the wrong gauge params.
+        """
+        raw = os.environ.get("RAGAS_JUDGE_MAX_TOKENS", "").strip()
+        if not raw:
+            return cls._DEFAULT_JUDGE_MAX_TOKENS
+        try:
+            value = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                f"RAGAS_JUDGE_MAX_TOKENS must be an integer, got {raw!r}"
+            ) from exc
+        if value <= 0:
+            raise ValueError(
+                f"RAGAS_JUDGE_MAX_TOKENS must be positive, got {value}"
+            )
+        return value
+
+    # T22: deepseek-flash defaults thinking ON (billed reasoning tokens,
+    # slower — T21 lesson). Frozen OFF for the judge: decomposition and
+    # verdicts are extraction-shaped work, not reasoning work. Rides
+    # extra_body (a bare `thinking` kwarg TypeErrors on the OpenAI SDK;
+    # passthrough verified by the T21 synthesiser).
+    _DEFAULT_JUDGE_THINKING = "off"
+
+    @classmethod
+    def _resolve_judge_thinking(cls) -> dict[str, dict[str, str]]:
+        """Thinking-mode extra_body: RAGAS_JUDGE_THINKING on|off (default off).
+
+        Returns the deepseek ``extra_body`` payload. Deepseek branch only —
+        foreign endpoints (ollama/azure) must not receive unknown params.
+        """
+        raw = (
+            os.environ.get("RAGAS_JUDGE_THINKING", "").strip().lower()
+            or cls._DEFAULT_JUDGE_THINKING
+        )
+        if raw not in {"on", "off"}:
+            raise ValueError(
+                f"RAGAS_JUDGE_THINKING must be 'on' or 'off', got {raw!r}"
+            )
+        return {"thinking": {"type": "enabled" if raw == "on" else "disabled"}}
+
     def _resolve_ollama_base_url(self) -> str:
         """Ollama endpoint: OLLAMA_BASE_URL env > default, with /v1 suffix."""
         env_url = os.environ.get("OLLAMA_BASE_URL", "").rstrip("/")
@@ -436,7 +491,8 @@ class RagasEvaluator(BaseEvaluator):
                 base_url=base_url, api_key="ollama", http_client=http_client,
             )
             llm = llm_factory(
-                self._resolve_judge_model(), client=client, max_tokens=8192,
+                self._resolve_judge_model(), client=client,
+                max_tokens=self._resolve_judge_max_tokens(),
                 cache=cache,
             )
             return llm
@@ -454,9 +510,18 @@ class RagasEvaluator(BaseEvaluator):
                     "is not set"
                 )
             client = build_deepseek_client()
+            max_tokens = self._resolve_judge_max_tokens()
+            thinking = self._resolve_judge_thinking()
             llm = llm_factory(
-                self._resolve_judge_model(), client=client, max_tokens=8192,
-                cache=cache,
+                self._resolve_judge_model(), client=client,
+                max_tokens=max_tokens, cache=cache, extra_body=thinking,
+            )
+            # Arm label: batch logs record the gauge params this run
+            # actually used (drivers grep this line to guard arm identity).
+            logger.info(
+                "Judge: deepseek/%s max_tokens=%d thinking=%s",
+                self._resolve_judge_model(), max_tokens,
+                thinking["thinking"]["type"],
             )
             return llm
 
@@ -489,7 +554,8 @@ class RagasEvaluator(BaseEvaluator):
             )
 
         llm = llm_factory(
-            llm_cfg.model, client=llm_client, max_tokens=8192, cache=cache
+            llm_cfg.model, client=llm_client,
+            max_tokens=self._resolve_judge_max_tokens(), cache=cache,
         )
 
         return llm

@@ -344,7 +344,10 @@ class QueryKnowledgeHubTool:
             raise RuntimeError("HybridSearch not initialized")
         
         # Use a larger initial retrieval for reranking
-        initial_top_k = top_k * 2 if self.config.enable_rerank else top_k
+        # (T22 D1: pool depth = top_k × rerank_pool_multiplier, config-driven)
+        pool_multiplier = getattr(
+            self._hybrid_search.config, 'rerank_pool_multiplier', 2)
+        initial_top_k = top_k * pool_multiplier if self.config.enable_rerank else top_k
         
         try:
             results = self._hybrid_search.search(

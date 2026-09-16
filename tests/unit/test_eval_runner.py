@@ -465,8 +465,9 @@ class TestEvalRunnerSourceGT:
 
 
 class TestEvalRunnerRerankProtocol:
-    """Pin the T15 A/B retrieval protocol: with an enabled reranker,
-    _retrieve takes 2x candidates from hybrid search, reranks, then
+    """Pin the rerank retrieval protocol: with an enabled reranker,
+    _retrieve takes top_k × rerank_pool_multiplier candidates from hybrid
+    search (config-driven since T22 D1, was a hardcoded ×2), reranks, then
     truncates back to the requested top_k (context depth stays constant,
     so a rerank on/off comparison isolates rerank quality alone)."""
 
@@ -476,25 +477,42 @@ class TestEvalRunnerRerankProtocol:
             for i in range(n)
         ]
 
-    def _make_runner(self, reranker: Any) -> EvalRunner:
+    def _make_runner(self, reranker: Any, pool_multiplier: int = 2) -> EvalRunner:
         mock_search = MagicMock()
+        # 显式设值：MagicMock 自动属性会让 top_k × multiplier 直接 TypeError
+        mock_search.config.rerank_pool_multiplier = pool_multiplier
         mock_search.search.side_effect = lambda query, top_k: self._make_results(top_k)
         return EvalRunner(hybrid_search=mock_search, evaluator=StubEvaluator(), reranker=reranker)
 
-    def test_enabled_reranker_doubles_pool_then_truncates(self) -> None:
+    def test_enabled_reranker_scales_pool_then_truncates(self) -> None:
         reranked = self._make_results(3)  # reranker "returns" fewer than top_k
         mock_reranker = MagicMock()
         mock_reranker.is_enabled = True
         mock_reranker.rerank.return_value = MagicMock(results=reranked)
 
-        runner = self._make_runner(mock_reranker)
+        runner = self._make_runner(mock_reranker)  # default multiplier 2
         out = runner._retrieve("qkd security", 10, None)
 
-        # 2x candidate pool requested from hybrid search
+        # top_k × 2 candidate pool requested from hybrid search (legacy depth)
         runner.hybrid_search.search.assert_called_once_with(query="qkd security", top_k=20)
         # rerank applied at the requested depth (10), not rerank.top_k (5)
         _, rerank_kwargs = mock_reranker.rerank.call_args
         assert rerank_kwargs["top_k"] == 10
+        assert out == reranked
+
+    def test_pool_multiplier_deepens_candidates(self) -> None:
+        """T22 D1: multiplier 5 → 候选池 top_k×5，重排仍截回 top_k。"""
+        reranked = self._make_results(5)
+        mock_reranker = MagicMock()
+        mock_reranker.is_enabled = True
+        mock_reranker.rerank.return_value = MagicMock(results=reranked)
+
+        runner = self._make_runner(mock_reranker, pool_multiplier=5)
+        out = runner._retrieve("qkd security", 5, None)
+
+        runner.hybrid_search.search.assert_called_once_with(query="qkd security", top_k=25)
+        _, rerank_kwargs = mock_reranker.rerank.call_args
+        assert rerank_kwargs["top_k"] == 5
         assert out == reranked
 
     def test_disabled_reranker_keeps_plain_depth(self) -> None:

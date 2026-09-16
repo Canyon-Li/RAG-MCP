@@ -181,7 +181,8 @@ def parse_args() -> argparse.Namespace:
 SYNTH_MAX_TOKENS = 16384   # API acceptance probed 2026-09-14: the first KG
                            # build died at NER — IncompleteOutputException on
                            # one numeric-dense chunk at 8192 (T20 overflow
-                           # family). Judge stays 8192 until T22 (gauge freeze).
+                           # family). Judge moved to the same 16384 at the
+                           # T22 baseline (RAGAS_JUDGE_MAX_TOKENS default).
 SYNTH_TEMPERATURE = 0      # greedy decoding; script-level seeds are the real
                            # reproducibility lever (API seed is best-effort)
 SYNTH_API_SEED = 42        # API-side seed, best-effort semantics (probed)

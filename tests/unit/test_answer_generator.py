@@ -39,20 +39,37 @@ class TestPromptFile:
         assert "{query}" in template
         assert "{context}" in template
 
-    def test_prompt_carries_grounding_rules(self) -> None:
-        """User-approved draft: only-retrieved / no-fabrication / no-preamble.
-        Source citation was deferred by the user (2026-09-13, faithfulness
-        overflow triage) — no assertion on it until that work lands."""
+    def test_prompt_grounding_rules_present(self) -> None:
+        """T22 prompt surgery (2026-09-15): the grounding contract gained
+        three invariants born from the run1/oldexam faithfulness attribution
+        — the fixed one-sentence hedge form, the ban on mentioning passage
+        labels/file names (citation welding zeroed q20), and the ban on
+        computing numbers the passages don't state (q6's "111 fewer")."""
         template = _read_prompt_template().lower()
         assert "only" in template
         assert "never fabricate" in template
-        assert "do not cover this" in template
+        assert "not covered by the passages" in template
+        assert "do not mention the passages" in template
+        assert "do not compute new numbers" in template
 
     def test_prompt_caps_answer_length(self) -> None:
         """Length cap targets the faithfulness judge overflow: statement
         count scales with answer length, judge output capped at 8192."""
         template = _read_prompt_template()
         assert "900 characters" in template
+
+    def test_prompt_hard_refusal_rule(self) -> None:
+        """T22 layer-1 refusal (2026-09-15): when the fact the question
+        actually asks for is absent from the passages, the model must
+        hard-refuse with one exact sentence instead of parametric-memory
+        filling (old-exam q13/q11 family). Three contract pins: the exact
+        refusal sentence, the literal trigger (the asked-for fact absent
+        "in its own words" — a check granite 8B can actually perform), and
+        the partial-coverage escape (answer what IS covered, don't refuse)."""
+        template = _read_prompt_template().lower()
+        assert "i cannot answer based on the given passages" in template
+        assert "in its own words" in template
+        assert "answer those parts" in template
 
 
 # ── Generator behaviour ────────────────────────────────────────────
@@ -78,7 +95,11 @@ class TestRagAnswerGenerator:
         assert "How many qubits?" in content
         assert "264/328/392 qubits." in content
 
-    def test_context_passages_numbered_with_source_basenames(self) -> None:
+    def test_context_passages_numbered_without_source_labels(self) -> None:
+        """T22 welding fix: passages carry only "[i]" numbering — NO source
+        file names. granite mirrors the assembled format, and "(Source:
+        x.pdf)" labels got welded into answer statements the faithfulness
+        judge cannot verify (old-exam q20: 0.00 on all-factual content)."""
         llm = MagicMock()
         llm.chat.return_value = MagicMock(content="ans")
 
@@ -89,13 +110,17 @@ class TestRagAnswerGenerator:
         ])
 
         content = llm.chat.call_args.args[0][0].content
-        assert "[1]" in content and "alpha-paper.pdf" in content
-        assert "[2]" in content and "beta-paper.pdf" in content
+        assert "[1]" in content and "text one" in content
+        assert "[2]" in content and "text two" in content
+        assert "alpha-paper.pdf" not in content
+        assert "beta-paper.pdf" not in content
+        assert "Source:" not in content
         # absolute path noise must not leak into the prompt
         assert "C:/corpus" not in content
 
     def test_dict_chunks_supported(self) -> None:
-        """dict chunks (text/source keys) assemble like object chunks."""
+        """dict chunks (text/source keys) assemble like object chunks
+        (source metadata is ignored — see the welding-fix test above)."""
         llm = MagicMock()
         llm.chat.return_value = MagicMock(content="ans")
 
@@ -104,7 +129,7 @@ class TestRagAnswerGenerator:
 
         content = llm.chat.call_args.args[0][0].content
         assert "plain dict text" in content
-        assert "x.pdf" in content
+        assert "x.pdf" not in content
 
     def test_llm_failure_returns_none(self) -> None:
         """Decision T20: generation failure → None (skip metrics), never a

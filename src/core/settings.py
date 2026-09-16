@@ -132,6 +132,9 @@ class RetrievalSettings:
     # T19: query-side references-section filter (post-fusion, pre-truncation).
     # Optional so pre-T19 configs keep parsing (defaults to off).
     filter_references: bool = False
+    # T22 D1: 重排候选池深度 = 最终 top_k × 此倍数（原先 eval/MCP/dashboard
+    # 三处硬编码 ×2）。可选，缺省 2 = 与旧硬编码行为逐字节一致。
+    rerank_pool_multiplier: int = 2
 
 
 @dataclass(frozen=True)
@@ -222,6 +225,9 @@ class Settings:
         embedding = _require_mapping(data, "embedding", "settings")
         vector_store = _require_mapping(data, "vector_store", "settings")
         retrieval = _require_mapping(data, "retrieval", "settings")
+        # T22 D1: 可选 key——缺省 2（= 旧硬编码行为）；有值则由 _require_int
+        # 做类型检查（非 int 报 SettingsError）
+        retrieval.setdefault("rerank_pool_multiplier", 2)
         rerank = _require_mapping(data, "rerank", "settings")
         evaluation = _require_mapping(data, "evaluation", "settings")
         observability = _require_mapping(data, "observability", "settings")
@@ -314,6 +320,8 @@ class Settings:
                 fusion_top_k=_require_int(retrieval, "fusion_top_k", "retrieval"),
                 rrf_k=_require_int(retrieval, "rrf_k", "retrieval"),
                 filter_references=bool(retrieval.get("filter_references", False)),
+                rerank_pool_multiplier=_require_int(
+                    retrieval, "rerank_pool_multiplier", "retrieval"),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),
@@ -351,6 +359,9 @@ def validate_settings(settings: Settings) -> None:
         raise SettingsError("Missing required field: vector_store.provider")
     if not settings.retrieval.rrf_k:
         raise SettingsError("Missing required field: retrieval.rrf_k")
+    if settings.retrieval.rerank_pool_multiplier < 1:
+        raise SettingsError(
+            "Invalid value: retrieval.rerank_pool_multiplier must be >= 1")
     if not settings.rerank.provider:
         raise SettingsError("Missing required field: rerank.provider")
     if not settings.evaluation.provider:
