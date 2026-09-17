@@ -80,7 +80,7 @@ pip install -e ".[dev]"
 
 ```yaml
 llm:
-  provider: "ollama"           # 绝对本地，私有 PDF 不出机器（场景决策见 DEV_CHANGELOG D-024）
+  provider: "ollama"
   model: "granite4.1:8b"
   base_url: "http://localhost:11434/v1"   # /v1 供 vision/embedding 的 OpenAI 兼容端点；文本 LLM 自动剥 /v1 用原生 /api/chat
 embedding:
@@ -143,19 +143,14 @@ MCP Server 通过 stdio + JSON-RPC 通信。在 MCP 客户端配置中添加以�
 
 ## 评估
 
-检索质量通过 golden test set 进行回归验证，而非主观判断。一条评估命令的流程为：执行真实检索 + 计算五个指标，全量运行约需数分钟。
+检索质量通过 golden test set 进行回归验证，而非主观判断。
 
-### 五个指标
+### 指标
 
 | 指标 | 判定方式 | 度量内容 |
 |---|---|---|
-| `source_recall@k` | 确定性集合运算（零 LLM） | 应命中的论文是否进入 top-k |
-| `source_precision@k` | 确定性集合运算 | top-k 中正确论文的占比 |
-| `context_relevance` | LLM judge（RAGAS） | 检索内容与问题的相关性 |
 | `context_precision` | LLM judge（RAGAS） | 相关 chunk 的排序质量 |
 | `context_recall` | LLM judge（RAGAS） | **应召回的信息是否被覆盖**（漏检侧，v2 新增） |
-
-GT 来自 [tests/fixtures/golden_test_set.json](tests/fixtures/golden_test_set.json)：`query` + `expected_sources`（论文文件名）+ `reference`（论断式参考答案，供语义指标判定）。设计原则：**确定性可量度的（文档级命中）不使用 LLM，需要语义判断的（chunk 级）才使用 LLM**——当 judge 出现波动时，source 指标可作为零方差的故障对照锚点。
 
 ### 运行评估
 

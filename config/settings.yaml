@@ -6,8 +6,7 @@
 # LLM Configuration
 # =============================================================================
 llm:
-  provider: "deepseek"  # T22 暂时切换（2026-09-15）：granite4.1:8b → deepseek-flash，
-                        # 生成端质量实验（拒答/记忆填充家族）；git 可回滚回 ollama/granite4.1:8b
+  provider: "deepseek"  # 2026-09-17 收尾定版留用（T22 生成质量实验切换，faithfulness +18pt；原 ollama/granite4.1:8b）
   model: "deepseek-flash"
   deployment_name: ""
   azure_endpoint: ""

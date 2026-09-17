@@ -318,3 +318,11 @@
 ```
 
 > 写作纪律：① 没有证据（commit / 文件 / 实测）的决策不要写；② "改了什么"交给 git，这里只写"为什么"；③ 弃用的方案和踩过的坑同样重要，写下来避免重蹈。
+
+### D-036 LLM 判官工程参数三课：调用量换代→节流重校、拆解膨胀→max_tokens 16384、思考默认开→显式关
+- **碰到**：[T20](../.wayfinder/tickets/T20-generation-and-4metrics.md) 切 4 参数后连环四个现象。① run1 全量 13/23 题 IncompleteOutput 之外 **APITimeoutError 全题清零**——4 参数每题判官调用 ~7 次（v4.0 约 3 次），原节流参数（批间 15s、客户端默认超时）随调用量上升失效；② faithfulness 3 题（数字最密）IncompleteOutputException——判官把答案拆成 statements 的**拆解输出**撞 `max_tokens=8192`；生成端 prompt 手术把答案压 60% 只回收 2 题，且 841✓/968✗/1080✓/1165✗ 证明溢出与答案长度**无单调关系**，病灶在判官对数字密集内容的拆解膨胀；③ [T21](../.wayfinder/tickets/T21-testset-v50-synthesis.md) 合成的 NER 步骤同样撞 8192 直接崩整跑（无部分保存，~350 调用全重付）；④ 线上抓包发现 **deepseek-flash 思考输出默认开**（reasoning_tokens 计费且拖慢，判官/合成器的隐性成本）。
+- **行业做法**：LLM-as-judge 不稳定公认，四类缓解见 [判官稳定性调研](../.wayfinder/research/llm-judge-stability-industry.md)（exact-match 缓存/温度→0/多采样/粗粒度判决）；「判官调用量随指标组合换代→节流与输出上限需整体重校」没有现成指引，本条为实测结论。思考模式关闭依赖供应商 API 的显式 opt-out，无文档提示默认态——靠 usage 抓包发现。
+- **我的解法**：三层防失效 + 两个参数定版——① 单指标隔离（`_run_ragas` 单指标异常只排除该指标，不作废整 run）；② deepseek 客户端显式 connect=15s / read=300s / max_retries=4 + 批间 15s→30s；③ 判官与合成器 `max_tokens` 8192→16384（T21 合成器实证可用）；④ 思考模式显式关（extra_body 透传）；⑤ 合成侧步间保存 + DiskCache 断点可续。定版判官参数（[T22](../.wayfinder/tickets/T22-new-baseline-and-noise-floor.md) 冻结）：deepseek-flash / 16384 / 思考关 / 批间 30s / 温度 0.01（ragas 0.4.3 隐式）。run2 起 0 超时、0 溢出。
+- **为什么不用别的**：① 压输入硬凑 8192——实证溢出与输入长度无单调关系，且压答案动的是被测产物（faithfulness 的对象）；② 换判官/调温度——换刻度，纪律①禁止；③ 关了思考就算完——思考开还影响计费与 wall time，usage 记账才能发现；④ 靠重跑硬抗——run1 的 13/23 作废即反例。
+- **代价 / 现状**：16384 抬高单次调用成本上限（实测未再溢出）；批间 30s 使全量评测多 ~3min；思考关后判官输出无 reasoning，历史口径对照需注意 T20 首批读数产自思考开。现状：定版参数随 oldexam-optimization.md 全程冻结使用。
+- **关联**：[T20](../.wayfinder/tickets/T20-generation-and-4metrics.md) / [T21](../.wayfinder/tickets/T21-testset-v50-synthesis.md) / [T22](../.wayfinder/tickets/T22-new-baseline-and-noise-floor.md) Resolution；[oldexam-optimization.md](../.wayfinder/oldexam-optimization.md)（参数唯一记录源）。
