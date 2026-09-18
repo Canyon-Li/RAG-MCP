@@ -295,6 +295,10 @@ class IngestionPipeline:
                 }
                 if document.metadata.get("degraded"):
                     _load_payload["degraded"] = True
+                # D-036 replay visibility: flag cache-hit parses in the trace
+                # so the dashboard can tell replay from a real docling convert.
+                if getattr(self.parser, "last_parse_replayed", False):
+                    _load_payload["parse_cache_replayed"] = True
                 trace.record_stage("load", _load_payload, elapsed_ms=_elapsed)
 
             # ─────────────────────────────────────────────────────────────

@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.core.settings import ParseCacheSettings, REPO_ROOT
 from src.core.types import Document
 from src.libs.parser.base_parser import BaseParser
 from src.libs.parser.parser_factory import ParserFactory
@@ -195,6 +196,42 @@ class TestParserFactoryCreate:
         del settings.ingestion.parser.page_batch_size
         parser = ParserFactory.create(settings, collection="c")
         assert "page_batch_size" not in parser.init_kwargs
+
+    def test_create_passes_parse_cache_dir_when_enabled(self):
+        """Factory forwards the repo-root-resolved cache dir when the D-036
+        parse cache is configured and enabled."""
+        ParserFactory.register_provider("fake", FakeParser)
+        settings = self._settings("fake")
+        settings.ingestion.parser.parse_cache = ParseCacheSettings(
+            enabled=True, dir="data/parsed"
+        )
+
+        parser = ParserFactory.create(settings, collection="c")
+
+        # Relative dir is anchored to REPO_ROOT, CWD-independent (resolve_path).
+        assert parser.init_kwargs["parse_cache_dir"] == str(
+            (REPO_ROOT / "data" / "parsed").resolve()
+        )
+
+    def test_create_omits_parse_cache_when_disabled(self):
+        """enabled=false must not leak the kwarg — providers stay cache-free."""
+        ParserFactory.register_provider("fake", FakeParser)
+        settings = self._settings("fake")
+        settings.ingestion.parser.parse_cache = ParseCacheSettings(
+            enabled=False, dir="data/parsed"
+        )
+
+        parser = ParserFactory.create(settings, collection="c")
+        assert "parse_cache_dir" not in parser.init_kwargs
+
+    def test_create_omits_parse_cache_when_unset(self):
+        """Unconfigured parse_cache (pre-D-036 configs and mocks) → no kwarg."""
+        ParserFactory.register_provider("fake", FakeParser)
+
+        settings = self._settings("fake")
+        del settings.ingestion.parser.parse_cache
+        parser = ParserFactory.create(settings, collection="c")
+        assert "parse_cache_dir" not in parser.init_kwargs
 
     def test_create_unknown_provider(self):
         """An unregistered provider should raise a clear ValueError."""

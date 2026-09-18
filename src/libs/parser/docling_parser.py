@@ -11,6 +11,14 @@ Table representation differs from PdfTableParser: Docling yields GFM Markdown
 ``ResponseBuilder._render_table_snippet`` detects GFM-vs-HTML and renders GFM
 as-is (§15.1: plain text for embed, structured form for display).
 
+Parse cache (D-036): a successful complete parse saves its DoclingDocuments
+as lossless JSON (``ParseCache``); a later parse of the same content (i.e. a
+``--force`` re-ingest — the pipeline's SHA256 skip handles the rest) replays
+from JSON instead of re-paying the docling CPU conversion. Replay walks the
+identical item-mapping code over the identical item stream, so sections are
+equivalent by construction. The cache carries a parser version stamp; a
+mapping upgrade invalidates old entries automatically.
+
 Constructor contract (shared): ``__init__(settings, collection, image_storage_dir,
 extract_images, **kwargs)``. Falls back to ``PdfTextParser`` (MarkItDown) when
 docling raises (degradation chain: docling → pdf_text). Figure regions are
@@ -20,12 +28,16 @@ and vector graphics); the emitted image dicts match PdfTableParser's contract.
 
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from docling.document_converter import DocumentConverter
+    from docling_core.types.doc import DoclingDocument
 
     DOCLING_AVAILABLE = True
 except ImportError:
@@ -40,6 +52,7 @@ except ImportError:
 
 from src.core.types import Document
 from src.libs.parser.base_parser import BaseParser
+from src.libs.parser.parse_cache import ParseCache
 from src.libs.parser.pdf_text_parser import PdfTextParser
 
 logger = logging.getLogger(__name__)
@@ -63,6 +76,18 @@ _LABEL_MAP: Dict[str, str] = {
 }
 
 
+def _docling_package_version() -> str:
+    """Installed docling version ('unknown' when metadata lookup fails).
+
+    Part of the parse-cache version stamp — parse output follows the docling
+    version, so an upgrade must invalidate old cache entries (D-036/D-037).
+    """
+    try:
+        return importlib.metadata.version("docling")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 class DoclingParser(BaseParser):
     """PDF parser using IBM Docling (DocLayNet + TableFormer).
 
@@ -72,6 +97,11 @@ class DoclingParser(BaseParser):
     (display) fields. Figure regions are rendered to PNG via PyMuPDF
     ``get_pixmap(clip=bbox)`` (captures raster + vector). Falls back to
     PdfTextParser on docling failure.
+
+    With a parse cache configured (``parse_cache_dir``), complete successful
+    parses persist their DoclingDocuments as lossless JSON and later parses
+    of identical content replay from them — zero DocumentConverter calls
+    (D-036). Fallback (degraded) results are never cached.
     """
 
     # Region rendering for figure extraction (replaces get_images).
@@ -96,6 +126,7 @@ class DoclingParser(BaseParser):
         image_storage_dir: str | Path = "data/images",
         extract_images: bool = True,
         page_batch_size: int | None = None,
+        parse_cache_dir: str | Path | None = None,
         **kwargs: Any,
     ):
         """Initialize DoclingParser.
@@ -108,6 +139,9 @@ class DoclingParser(BaseParser):
             page_batch_size: Pages per docling conversion batch. None →
                 DEFAULT_PAGE_BATCH_SIZE (8). 1 disables batching value but not
                 the code path; values <= 0 mean "never batch" (single convert).
+            parse_cache_dir: Root dir for the D-036 parse cache
+                (Factory-resolved when ``ingestion.parser.parse_cache.enabled``
+                is true). None keeps the cache off — pre-D-036 behaviour.
 
         Raises:
             ImportError: If docling is not installed.
@@ -126,6 +160,17 @@ class DoclingParser(BaseParser):
             if page_batch_size is not None
             else self.DEFAULT_PAGE_BATCH_SIZE
         )
+        # D-036 replay cache: absent dir = cache off.
+        self._parse_cache = (
+            ParseCache(cache_dir=parse_cache_dir, version_stamp=self._version_stamp())
+            if parse_cache_dir is not None
+            else None
+        )
+        # Observability side-channel for the pipeline's load-stage trace:
+        # True when the last parse() replayed from cache (zero converter
+        # calls). Kept off Document.metadata so it never leaks into chunk
+        # metadata / stored payloads.
+        self.last_parse_replayed = False
         # Composition: pdf_text for fallback (degradation chain §7.7).
         self._pdf_text = PdfTextParser(
             settings=settings,
@@ -143,19 +188,32 @@ class DoclingParser(BaseParser):
         doc_hash = self._compute_file_hash(path)
         doc_id = f"doc_{doc_hash[:16]}"
 
-        try:
-            sections, images = self._extract_with_docling(path, doc_hash)
-        except Exception as e:
-            logger.warning(
-                f"docling failed for {path}, falling back to pdf_text: {e}"
-            )
-            return self._fallback_to_pdf_text(path)
+        self.last_parse_replayed = False
+        replayed = self._try_replay(path, doc_hash)
+        if replayed is not None:
+            sections, images = replayed
+            self.last_parse_replayed = True
+        else:
+            try:
+                documents, complete = self._convert_batches(path)
+                sections, images = self._walk_documents(path, doc_hash, documents)
+            except Exception as e:
+                logger.warning(
+                    f"docling failed for {path}, falling back to pdf_text: {e}"
+                )
+                return self._fallback_to_pdf_text(path)
 
-        if not sections:
-            logger.warning(
-                f"docling yielded no sections for {path}, falling back to pdf_text"
-            )
-            return self._fallback_to_pdf_text(path)
+            if not sections:
+                logger.warning(
+                    f"docling yielded no sections for {path}, falling back to pdf_text"
+                )
+                return self._fallback_to_pdf_text(path)
+
+            # Only complete, non-empty parses are cacheable — a partial
+            # (batch-failed) or degraded result must not be frozen as the
+            # file's replay source (D-036). save() is best-effort itself.
+            if self._parse_cache is not None and complete:
+                self._parse_cache.save(doc_hash, documents)
 
         # Document.text is a flat rendering of sections (Chunker uses sections).
         full_text = self._sections_to_text(sections)
@@ -171,6 +229,67 @@ class DoclingParser(BaseParser):
         if title:
             metadata["title"] = title
         return Document(id=doc_id, text=full_text, metadata=metadata)
+
+    def _version_stamp(self) -> str:
+        """Stamp of the parse mapping that writes/reads the cache (D-036).
+
+        Everything in the payload changes what a replay must reproduce;
+        changing any of it bumps the stamp and auto-invalidates old cache
+        entries. Extends the D-036 suggestion (hash of ``_LABEL_MAP`` +
+        enrichment flags) with the concrete knobs that affect the saved
+        docling JSON or the replayed sections: figure rendering
+        (DPI / min size), image extraction, batch layout, and the docling
+        package version itself — parse output follows it, which is exactly
+        why replay exists (D-037).
+        """
+        payload = {
+            "parser": type(self).__name__,
+            "label_map": _LABEL_MAP,
+            "extract_images": self.extract_images,
+            "render_dpi": self.RENDER_DPI,
+            "min_figure_size": self.MIN_FIGURE_SIZE,
+            "page_batch_size": self.page_batch_size,
+            "docling_version": _docling_package_version(),
+        }
+        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def _try_replay(
+        self, path: Path, doc_hash: str
+    ) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+        """Replay a cached parse (D-036); None → run the real docling parse.
+
+        Any unusable cache (miss, stamp mismatch, corrupt/incomplete entry,
+        or a replay that yields no sections) returns None so ``parse`` falls
+        through to a fresh conversion — the cache is advisory and must never
+        break ingestion. Cache hits only ever happen for content that was
+        parsed before under the same stamp, i.e. ``--force`` re-ingests.
+        """
+        if self._parse_cache is None:
+            return None
+        try:
+            paths = self._parse_cache.lookup(doc_hash)
+            if not paths:
+                return None
+            documents = [
+                DoclingDocument.load_from_json(filename=str(p)) for p in paths
+            ]
+            sections, images = self._walk_documents(path, doc_hash, documents)
+        except Exception as e:
+            logger.warning(
+                f"parse cache replay failed for {doc_hash[:8]}, re-parsing: {e}"
+            )
+            return None
+        if not sections:
+            logger.warning(
+                f"parse cache for {doc_hash[:8]} yielded no sections, re-parsing"
+            )
+            return None
+        logger.info(
+            f"parse cache hit for {doc_hash[:8]}: replayed {len(documents)} "
+            f"batch JSON(s) (DocumentConverter skipped)"
+        )
+        return sections, images
 
     # ------------------------------------------------------------------
     # Docling extraction
@@ -261,10 +380,8 @@ class DoclingParser(BaseParser):
             logger.warning(f"Failed to render figure on page {page_num}: {e}")
             return None
 
-    def _extract_with_docling(
-        self, path: Path, doc_hash: str
-    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Extract typed sections and figures via Docling, in page batches.
+    def _convert_batches(self, path: Path) -> Tuple[List[Any], bool]:
+        """Convert the PDF batch-by-batch → (documents, all_batches_ok).
 
         Long PDFs are converted page-batch by page-batch, each batch with a
         FRESH DocumentConverter. Docling's preprocess accumulates native
@@ -272,10 +389,44 @@ class DoclingParser(BaseParser):
         (observed on 16 GB machines), silently skipping the rest — a fresh
         converter per batch resets the accumulation. See DEFAULT_PAGE_BATCH_SIZE.
 
-        Figures are rendered from each Docling Figure item's bbox via PyMuPDF
-        (``get_pixmap(clip=bbox)``) — this captures both raster and vector
-        graphics in one pass, replacing the old ``get_images()`` raster-only
-        extraction.
+        A batch-level failure (e.g. bad_alloc deeper than the threshold) keeps
+        documents already converted from earlier batches rather than losing
+        the whole document; ``all_batches_ok=False`` marks the result partial
+        (and thus uncacheable). If ALL batches fail, documents stays empty and
+        parse() falls back to pdf_text as before.
+        """
+        documents: List[Any] = []
+        complete = True
+        for s, e in self._page_batches(path):
+            converter = self._build_converter()
+            try:
+                result = (
+                    converter.convert(str(path), page_range=(s, e))
+                    if e is not None
+                    else converter.convert(str(path))
+                )
+            except Exception as exc:
+                complete = False
+                logger.warning(
+                    f"docling batch pages {s}-{e or 'end'} failed for "
+                    f"{path.name}: {exc}"
+                )
+                continue
+            documents.append(result.document)
+        return documents, complete
+
+    def _walk_documents(
+        self, path: Path, doc_hash: str, documents: List[Any]
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Map converted DoclingDocuments into (sections, images), in order.
+
+        Shared by the fresh-parse and cache-replay paths — replay walks the
+        identical mapping code over the identical item stream, which is what
+        makes cached sections equivalent to a real parse (D-036). Figures are
+        rendered from each Docling Figure item's bbox via PyMuPDF
+        (``get_pixmap(clip=bbox)``) — raster + vector in one pass — and
+        re-rendered on replay with the same deterministic ids (rendering never
+        touches DocumentConverter, so it stays cheap).
         """
         sections: List[Dict[str, Any]] = []
         images: List[Dict[str, Any]] = []
@@ -286,51 +437,51 @@ class DoclingParser(BaseParser):
         )
         fig_counter = 0
         try:
-            for s, e in self._page_batches(path):
-                converter = self._build_converter()
-                try:
-                    result = (
-                        converter.convert(str(path), page_range=(s, e))
-                        if e is not None
-                        else converter.convert(str(path))
-                    )
-                except Exception as exc:
-                    # Batch-level failure (e.g. bad_alloc deeper than the
-                    # threshold): keep sections already extracted from earlier
-                    # batches rather than losing the whole document. If ALL
-                    # batches fail, sections stays empty and parse() falls
-                    # back to pdf_text as before.
-                    logger.warning(
-                        f"docling batch pages {s}-{e or 'end'} failed for "
-                        f"{path.name}: {exc}"
-                    )
-                    continue
-                ddoc = result.document
-                for item, _level in ddoc.iterate_items():
-                    if fitz_doc is not None and self._is_figure_item(item):
-                        rendered = self._render_figure_region(
-                            fitz_doc, item, doc_hash, fig_counter
-                        )
-                        if rendered is not None:
-                            fig_counter += 1
-                            images.append(rendered)
-                            sections.append({
-                                "type": "figure",
-                                "text": f"[IMAGE: {rendered['id']}]",
-                                "page": rendered["page"],
-                                "bbox": None,
-                                "images": [rendered],
-                                "html": None,
-                            })
-                            continue
-                    sec = self._item_to_section(item, ddoc)
-                    if sec:
-                        sections.append(sec)
+            for ddoc in documents:
+                fig_counter = self._consume_items(
+                    ddoc, fitz_doc, doc_hash, sections, images, fig_counter
+                )
         finally:
             if fitz_doc is not None:
                 fitz_doc.close()
 
         return sections, images
+
+    def _consume_items(
+        self,
+        ddoc: Any,
+        fitz_doc: Any,
+        doc_hash: str,
+        sections: List[Dict[str, Any]],
+        images: List[Dict[str, Any]],
+        fig_counter: int,
+    ) -> int:
+        """Walk one DoclingDocument's items into sections/images (in place).
+
+        Returns the updated global figure counter — image ids depend on
+        figure order across the whole document, not per batch.
+        """
+        for item, _level in ddoc.iterate_items():
+            if fitz_doc is not None and self._is_figure_item(item):
+                rendered = self._render_figure_region(
+                    fitz_doc, item, doc_hash, fig_counter
+                )
+                if rendered is not None:
+                    fig_counter += 1
+                    images.append(rendered)
+                    sections.append({
+                        "type": "figure",
+                        "text": f"[IMAGE: {rendered['id']}]",
+                        "page": rendered["page"],
+                        "bbox": None,
+                        "images": [rendered],
+                        "html": None,
+                    })
+                    continue
+            sec = self._item_to_section(item, ddoc)
+            if sec:
+                sections.append(sec)
+        return fig_counter
 
     def _page_count(self, path: Path) -> Optional[int]:
         """Total page count of the PDF, or None when it can't be read.

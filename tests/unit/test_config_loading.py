@@ -185,3 +185,59 @@ def test_parser_page_batch_size_defaults_to_none(tmp_path: Path) -> None:
     assert settings.ingestion is not None
     assert settings.ingestion.parser is not None
     assert settings.ingestion.parser.page_batch_size is None
+
+
+def test_parser_parse_cache_parsed(tmp_path: Path) -> None:
+    """ingestion.parser.parse_cache carries the D-036 replay cache settings."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config(
+            "        provider: docling\n"
+            "        parse_cache:\n"
+            "          enabled: true\n"
+            "          dir: data/parsed"
+        ),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    cache = settings.ingestion.parser.parse_cache
+    assert cache is not None
+    assert cache.enabled is True
+    assert cache.dir == "data/parsed"
+
+
+def test_parser_parse_cache_defaults(tmp_path: Path) -> None:
+    """An empty parse_cache block (or absent keys) keeps the built-in defaults."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config("        provider: docling\n        parse_cache: {}"),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    cache = settings.ingestion.parser.parse_cache
+    assert cache is not None
+    assert cache.enabled is True
+    assert cache.dir == "data/parsed"
+
+
+def test_parser_parse_cache_absent_is_none(tmp_path: Path) -> None:
+    """Without the block the cache stays off (current pre-D-036 behaviour)."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config("        provider: docling\n        extract_images: true"),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    assert settings.ingestion.parser.parse_cache is None

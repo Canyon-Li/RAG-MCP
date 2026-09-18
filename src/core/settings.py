@@ -175,6 +175,20 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
+class ParseCacheSettings:
+    """Docling parse-result cache (D-036): lossless JSON replay for --force.
+
+    A ``--force`` re-ingest of an unchanged file replays the cached docling
+    JSON instead of re-paying the CPU parse. Replay only engages when a cache
+    entry already exists; the file-level SHA256 skip is untouched.
+    """
+
+    enabled: bool = True
+    # Repo-relative root; one sub-directory per file SHA256 (gitignored).
+    dir: str = "data/parsed"
+
+
+@dataclass(frozen=True)
 class ParserSettings:
     """Pluggable document parser configuration (K1, renamed from LoaderSettings).
 
@@ -191,6 +205,9 @@ class ParserSettings:
     # complete on machines with enough RAM (the batching was a 16 GB
     # workaround). ``None`` keeps the parser's built-in default.
     page_batch_size: Optional[int] = None
+    # Optional parse-result cache config (D-036). ``None`` keeps the cache
+    # off — pre-D-036 behaviour for configs without the block.
+    parse_cache: Optional[ParseCacheSettings] = None
 
 
 @dataclass(frozen=True)
@@ -240,6 +257,22 @@ class Settings:
             parser_settings = None
             if "parser" in ingestion:
                 parser_cfg = _require_mapping(ingestion, "parser", "ingestion")
+                parse_cache_settings = None
+                if "parse_cache" in parser_cfg:
+                    cache_cfg = _require_mapping(
+                        parser_cfg, "parse_cache", "ingestion.parser.parse_cache")
+                    parse_cache_settings = ParseCacheSettings(
+                        enabled=(
+                            _require_bool(
+                                cache_cfg, "enabled", "ingestion.parser.parse_cache")
+                            if "enabled" in cache_cfg else True
+                        ),
+                        dir=(
+                            _require_str(
+                                cache_cfg, "dir", "ingestion.parser.parse_cache")
+                            if "dir" in cache_cfg else "data/parsed"
+                        ),
+                    )
                 parser_settings = ParserSettings(
                     provider=_require_str(parser_cfg, "provider", "ingestion.parser"),
                     extract_images=(
@@ -250,6 +283,7 @@ class Settings:
                         _require_int(parser_cfg, "page_batch_size", "ingestion.parser")
                         if "page_batch_size" in parser_cfg else None
                     ),
+                    parse_cache=parse_cache_settings,
                 )
             elif "loader" in ingestion:
                 # Legacy fallback for pre-K1 configs.

@@ -50,7 +50,7 @@
 | D-033 | 2026-08-29 | cross-encoder 重模型上 MCP stdio 的三层坑：包级 preload 不够（transformers 懒 import）、阻塞预热炸 initialize 握手、e2e 管道无人排空即冻结——主线程裸 import + 后台 warm 线程 + 语义键缓存 | 采纳 | feat/cross-encoder-rerank |
 | D-034 | 2026-08-29 | references 段 query 侧过滤：entry-density 检测 + 融合全池**剔出**（非降位——cross-encoder 重打分会洗掉降位）+ 回填要求融合不预截断 | 采纳 | feat/reference-section-filter |
 | D-035 | 2026-09-13 | docling 分批转换（16GB RAM workaround）同机间歇丢段 → `page_batch_size` 配置化并默认 0（单次完整转换，新机器内存足够且确定性可复现） | 采纳 | feat/t23-corpus-integrity |
-| D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 已拍板待实现 | 本文件 B 节 |
+| D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 已实现（09-18 追记） | 本文件 B 节 |
 | D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 已拍板待实现 | 本文件 B 节 |
 
 ---
@@ -173,13 +173,22 @@
 
 ### D-036 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳
 
-- **状态**：已拍板待实现（2026-09-17 设计对齐）。
+- **状态**：已实现（2026-09-18，工单 02；实现细节见下方追记）。
 - **背景**：解析是本机摄入链路最贵的一步（docling CPU 解析为重灌瓶颈），而当前换任何下游参数（分块策略、embedding、映射改动）都必须 `--force` 重付整轮解析。依据 `docs/docling-论文RAG-深度研究报告.html` 3.3 决策一：无损 JSON 是唯一真源，后续实验从 JSON 重放。
 - **备选**：① 不落盘（现状）；② 存项目 `sections` 快照（简单，但把解析映射冻结——将来加 FORMULA 映射、传 heading level、改图片过滤阈值，旧缓存全部失效仍要重解析，违背缓存目的）；③ **docling 原生无损 JSON + 解析器版本戳**。
 - **决策**：选 ③。parse 后 `save_as_json()` 落 `data/parsed/`（gitignored，键=文件 SHA256）；重放 = 从 JSON 重建 item 流再走 `_item_to_section`；JSON 记录生成它的解析器版本，版本不符自动重解析。文件级 SHA256 跳过（[[D-006]]）不动——重放只在 `--force` 重灌时生效。
 - **理由**：解析贵且实验频繁，缓存收益直接；sections 快照锁死上游演进空间，等于把今天的解析逻辑定死；版本戳防「陈旧缓存静默吃掉映射改动」——没有它，后面的 FORMULA/level 改动会被旧缓存悄悄吞掉。
 - **代价**：JSON 体积大于 sections；需对当前 docling 版本验证 JSON 往返 API（from_json → iterate_items）；「解析器版本」的定义实现时定（建议：`_LABEL_MAP` 与富化开关的哈希）。
 - **关联**：[CONTEXT.md](CONTEXT.md)（重放/解析缓存术语）；[[D-006]]（文件级幂等，缓存键同源）；[[D-011]]（docling 默认 parser）。
+
+**追记（2026-09-18，实现落定）**：
+
+- **缓存布局**：`data/parsed/{sha256}/manifest.json + batch_NNN.json`（可配 `ingestion.parser.parse_cache.{enabled,dir}`；块缺席 = 缓存关闭保持 pre-D-036 行为，仓库 settings.yaml 显式开启）。manifest 原子写（temp+rename）且最后落盘，批文件名确定性；lookup 只认 manifest 列出的文件，残缺条目按 miss 处理。
+- **版本戳定义（「实现时定」落定）**：`sha256(parser类名 + _LABEL_MAP + extract_images + RENDER_DPI + MIN_FIGURE_SIZE + page_batch_size + docling包版本)[:16]`。两类成分要分清：**影响 docling JSON 本身**的（page_batch_size 批布局、docling 版本，将来工单 03 的转换 options）不进戳就会回放过期 JSON，必须进；**只影响映射/渲染**的（_LABEL_MAP、extract_images、渲染参数）本可不进——重放走的是**当前**代码重跑映射与重渲（见下条），改动天然生效不会被吞。仍收进戳是刻意的保守取向：让持久化捕获与全部解析相关参数保持同步，宁可多付一次重解析也不冒任何过期回放风险（改渲染/DPI 这类映射参数是低频事件）。后续 OCR 路由（工单 03）的转换 options 属第一类，落地时必须并入此戳。
+- **重放实现**：`_convert_batches`（新鲜转换）与 `_try_replay`（`load_from_json` 重建）共用 `_walk_documents/_consume_items` 同一段映射代码——等价性靠结构保证而非逐项对拍；也正因如此，「映射逻辑升级」（改 `_item_to_section` 等）重放时自动用新代码，不依赖版本戳兜底，戳只负责 JSON 捕获层面的过期。图形重放时经 PyMuPDF 原地重渲（同确定性 id，不碰 DocumentConverter）；分批部分失败（complete=False）与降级结果不落缓存；缓存读/写任何失败降级回真实解析（缓存是 advisory，不阻塞摄入）。
+- **重放只发生在 `--force`**：管线文件级 SHA256 跳过不动；未变文件无 `--force` 根本到不了解析步，改内容则换 SHA 换缓存键自然 miss——无需把 force 传入 parser。
+- **实测（2026-09-18，simple.pdf 单页，docling 2.123.1）**：新鲜解析 5.73s vs 重放 0.05s（~115×），sections/text 逐字节相等；评测夹具口径见 spike 01（52.5–71.7s vs load 0.04s+切分 0.48s）。
+- **测试**：单测（ParseCache 契约/戳失效/开关/降级/图形重渲）+ 管线接缝（二次 `--force` 零 converter 调用 + 落库 chunk id/text 等价 + BM25 无重复；DocumentConverter 打探针、save/load 走真实文件）+ 真 docling 集成（`test_docling_parse_cache_real.py`，标 slow 但 `pytest` 默认全量包含——addopts 无 -m 过滤，等价性验证在常规门禁内）。
 
 ### D-037 切分器切换 docling HybridChunker（自研方案转后备蓝图）
 

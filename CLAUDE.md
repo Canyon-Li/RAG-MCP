@@ -113,7 +113,7 @@ Image extraction method is **parser-specific** (capability boundary — see DEV_
 
 - File-level: SHA256 in SQLite at `data/db/ingestion_history.db` → unchanged files are skipped (zero-cost incremental ingest). `--force` bypasses this.
 - Chunk-level: deterministic `chunk_id = {doc_id}_{index:04d}_{content_hash8}`; upserts are idempotent.
-- Stores: Chroma at `data/db/chroma/` (dense + sparse vectors + payload), BM25 **JSON** index at `data/db/bm25/{collection}/{collection}_bm25.json` (`json.dump` with atomic temp-then-rename — **not** pickle), image files at `data/images/` + structured image metadata in ImageStorage SQLite at `data/db/image_index.db` (D-018 — image data is **not** stored in Chroma), traces at `logs/traces.jsonl`.
+- Stores: Chroma at `data/db/chroma/` (dense + sparse vectors + payload), BM25 **JSON** index at `data/db/bm25/{collection}/{collection}_bm25.json` (`json.dump` with atomic temp-then-rename — **not** pickle), image files at `data/images/` + structured image metadata in ImageStorage SQLite at `data/db/image_index.db` (D-018 — image data is **not** stored in Chroma), docling parse cache at `data/parsed/{sha256}/` (lossless JSON replay for `--force` re-ingest, keyed by file SHA256 + parser version stamp — enable/dir live in [config/settings.yaml](config/settings.yaml), D-036), traces at `logs/traces.jsonl`.
 
 ## Conventions and gotchas
 

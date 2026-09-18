@@ -113,7 +113,7 @@ class ParserFactory:
         # extract_images is forwarded via kwargs.
         # resolve_path is imported lazily to keep libs free of a runtime
         # core dependency at import time (mirrors the other factories).
-        from src.core.settings import resolve_path
+        from src.core.settings import ParseCacheSettings, resolve_path
 
         image_storage_dir = str(resolve_path(f"data/images/{collection}"))
         # T23: optional conversion-batching override (0 = single convert —
@@ -125,6 +125,16 @@ class ParserFactory:
             page_batch_size = getattr(parser_cfg, "page_batch_size", None)
             if isinstance(page_batch_size, int):
                 extra_kwargs["page_batch_size"] = page_batch_size
+            # D-036: forward the parse-cache root only when the cache is
+            # configured AND enabled — absence of the kwarg keeps providers
+            # cache-free (pre-D-036 behaviour). isinstance guard for the
+            # same mock-tolerance reason as page_batch_size above.
+            parse_cache_cfg = getattr(parser_cfg, "parse_cache", None)
+            if (
+                isinstance(parse_cache_cfg, ParseCacheSettings)
+                and parse_cache_cfg.enabled
+            ):
+                extra_kwargs["parse_cache_dir"] = str(resolve_path(parse_cache_cfg.dir))
         try:
             return provider_class(
                 settings=settings,
