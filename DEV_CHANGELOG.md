@@ -50,6 +50,8 @@
 | D-033 | 2026-08-29 | cross-encoder 重模型上 MCP stdio 的三层坑：包级 preload 不够（transformers 懒 import）、阻塞预热炸 initialize 握手、e2e 管道无人排空即冻结——主线程裸 import + 后台 warm 线程 + 语义键缓存 | 采纳 | feat/cross-encoder-rerank |
 | D-034 | 2026-08-29 | references 段 query 侧过滤：entry-density 检测 + 融合全池**剔出**（非降位——cross-encoder 重打分会洗掉降位）+ 回填要求融合不预截断 | 采纳 | feat/reference-section-filter |
 | D-035 | 2026-09-13 | docling 分批转换（16GB RAM workaround）同机间歇丢段 → `page_batch_size` 配置化并默认 0（单次完整转换，新机器内存足够且确定性可复现） | 采纳 | feat/t23-corpus-integrity |
+| D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 已拍板待实现 | 本文件 B 节 |
+| D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 已拍板待实现 | 本文件 B 节 |
 
 ---
 
@@ -86,6 +88,8 @@
 - **我的解法**：三件套（[server.py](src/mcp_server/server.py) + [reranker.py](src/core/query_engine/reranker.py)）：①主线程裸 `import sentence_transformers`（~6s，import 锁纪律内）；②daemon warm 线程调 `create_core_reranker` 加载模型——`create_core_reranker` 按语义键 `(enabled, provider, model)` 缓存 + `threading.Lock` 双检，早到的首查在锁上等 warm 的实例，不双载不重 import；③e2e harness 改常驻 stderr 排空线程 + 常驻单 stdout reader（[test_mcp_client.py](tests/e2e/test_mcp_client.py)）。副产品：并发 tool call 的 ChromaDB client 创建竞态是存量 bug（基线 rerank-off 可复现），开 [T18](../.wayfinder/tickets/T18-concurrent-chroma-client-race.md) 跟进。
 - **为什么不用别的**：①阻塞式主线程加载——握手 90s+，Copilot/Claude Desktop 的 initialize 超时直接判死；②首查时在 worker 线程加载——回到 import-lock 死锁；③不缓存、每次加载——2GB 模型次次冷读 15-90s，且重触发懒 import；④进程级单例（不做语义键）——测试注入与 settings 变更语义会被缓存污染，语义键 + 显式 `reranker=` 旁路最稳。
 - **关联**：[CLAUDE.md](CLAUDE.md)（MCP stdio 节已更新至此模式）；[[D-004]]（preload 纪律的边界外推）；[[D-005]]（warm 失败走 graceful degradation，首查降级 RRF 顺序）；判官面 A/B 结论见 T15 Resolution（precision +10.9pt 显著 / recall 噪声内——印证 [[T05]] precision 唯一排序敏感）。
+- **追记（2026-09-17，512 截断留观）**：设计对齐会发现 [cross_encoder_reranker.py](src/libs/reranker/cross_encoder_reranker.py) 构造 `CrossEncoder(model_name)` 未传 `max_length`，sentence-transformers 默认按 **512 token 截断**重排输入，而模型本体支持 8192（bge-reranker-v2-m3 = BGE-M3 底座 + 打分头，`max_position_embeddings: 8194`）——即 T15 的 +10.9pt 是**带着截断**测得的，截断的真实代价未单独归因。决策：留观不动。max_length 是查询侧一行改动、无需重灌、随时可翻，推迟成本近零；若表格/长块检索质量暴露问题再调 1024–2048（不取 8192：CPU torch 下注意力平方级，长序列重排延迟不可接受）。
+- **追记（2026-09-18，留观解除→定 1024）**：表格块预算 token 化（总 1000 token）后，512 窗口只能看见前缀一半，留观前提失效。决策：`max_length=1024`（查询+块基本整装；满预算块+长查询会溢出几十 token，截的是行片尾部，接受）。注意 CPU torch 下 512→1024 单对计算约 4×，实现时须实测首查延迟，不可接受则回 768。
 
 ---
 
@@ -167,6 +171,31 @@
 - **为什么不用别的**：① 对称截 dense 到 10——dense 深尾有真源，预期伤 recall，且违反一次一变量的实验纪律、无实测支撑；② 升 sparse 权重（w05）——T03 实测是钝刀（仅 prec@5 +2.6pt、recall/MRR 逐题不动）且与截尾**负叠加**（w05_s10 全面低于 s10），还需代码接线 fuse_with_weights；③ 交给 rerank 修排序——T15 主序列本有此计划，但截尾在 rerank 之前先消掉位移源，与 rerank 不互斥。
 - **关联**：[settings.yaml](config/settings.yaml)（retrieval 段注释）；[hybrid_search.py](src/core/query_engine/hybrid_search.py)（sparse_top_k 接线）。对照锚见 [[D-030]]（判官缓存使未变题回放零噪声）；判读纪律承 [[D-029]]（噪声底内不作结论）。
 
+### D-036 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳
+
+- **状态**：已拍板待实现（2026-09-17 设计对齐）。
+- **背景**：解析是本机摄入链路最贵的一步（docling CPU 解析为重灌瓶颈），而当前换任何下游参数（分块策略、embedding、映射改动）都必须 `--force` 重付整轮解析。依据 `docs/docling-论文RAG-深度研究报告.html` 3.3 决策一：无损 JSON 是唯一真源，后续实验从 JSON 重放。
+- **备选**：① 不落盘（现状）；② 存项目 `sections` 快照（简单，但把解析映射冻结——将来加 FORMULA 映射、传 heading level、改图片过滤阈值，旧缓存全部失效仍要重解析，违背缓存目的）；③ **docling 原生无损 JSON + 解析器版本戳**。
+- **决策**：选 ③。parse 后 `save_as_json()` 落 `data/parsed/`（gitignored，键=文件 SHA256）；重放 = 从 JSON 重建 item 流再走 `_item_to_section`；JSON 记录生成它的解析器版本，版本不符自动重解析。文件级 SHA256 跳过（[[D-006]]）不动——重放只在 `--force` 重灌时生效。
+- **理由**：解析贵且实验频繁，缓存收益直接；sections 快照锁死上游演进空间，等于把今天的解析逻辑定死；版本戳防「陈旧缓存静默吃掉映射改动」——没有它，后面的 FORMULA/level 改动会被旧缓存悄悄吞掉。
+- **代价**：JSON 体积大于 sections；需对当前 docling 版本验证 JSON 往返 API（from_json → iterate_items）；「解析器版本」的定义实现时定（建议：`_LABEL_MAP` 与富化开关的哈希）。
+- **关联**：[CONTEXT.md](CONTEXT.md)（重放/解析缓存术语）；[[D-006]]（文件级幂等，缓存键同源）；[[D-011]]（docling 默认 parser）。
+
+### D-037 切分器切换 docling HybridChunker（自研方案转后备蓝图）
+
+- **状态**：已拍板待实现（2026-09-18 设计对齐）。
+- **背景**：表格/切分设计对齐过程中发现，自研 section-aware chunker 在逐项重造 docling HybridChunker 的既有能力——K2 结构切分 ≈ HierarchicalChunker 基座、章节回填 ≈ contextualize、表头重复 ≈ repeat_table_header（默认开）、尾片并回 ≈ merge_peers（默认开）、token 制预算 ≈ max_tokens 从 tokenizer 推导。且自研已付三个隐藏缺陷的维护成本（见 [[D-036]] 关联排查）：胖 GFM 按填充长度装箱致碎片化、切分后清洗致 split 哈希与 vector 哈希断裂、尾箱过小成检索噪声。触发本决策的分析：`docs/docling-论文RAG-深度研究报告.html` §2.4。
+- **决策**：docling 路径（含 D-036 重放路径）的切分改用 `docling.chunking.HybridChunker`，tokenizer **显式传 nomic-embed-text 的**（不传默认 MiniLM，块长与 embedding 窗口错配——报告坑 5 原文警告），max_tokens=1000，merge_peers 开；非 docling / 降级路径（pdf_text 降级、docx 等）保留现有 `DocumentChunker` 作兜底，配置开关可切回；行片摘要（deepseek-flash，≤120 token）仍为自研 post-chunk transform。
+- **后备蓝图（HybridChunker 效果不达预期时恢复自研的完整规格）**：
+  - 顺序铁律：确定性清洗（空白归一含 GFM 压缩/页眉线/HTML 残留）在切分**之前**，作为 sections→chunker 之间的独立 normalize 步骤（新鲜+重放都过）；概率性生成（行片摘要/VLM 描述）在切分之后。切分器只见过最终形态文本，split 哈希与 vector 哈希恒一致。
+  - 统一预算制（token）：正文块 1000（内容 ≤950 + 路径 ≤80，overlap 150）；表格块 1000 = 路径 ≤80 + 行片摘要 ≤120 + 表头 ≤200（超限截首行）+（行片+题注）≤600；路径超 80 token 截最近两级。
+  - 表格拆分：空白归一后按预算装箱，表头重复进每块，尾片压缩后 <200 字符并回前块；行片摘要 prompt 输入=整表+本片行范围、输出只转述该范围（≤120 token），按（表哈希+行范围）缓存，失败退无摘要形态。
+  - 公式：行间=独立公式块（前邻文+公式+后邻文，摘录量级对齐 overlap）；行内缝回原句。
+  - 切分器 tokenizer 化：RecursiveCharacterTextSplitter 配 nomic tokenizer（非字符 ×4 近似）。
+- **代价 / 实现期验证点**：①组成细节让渡上游（自研的逐项预算不再生效，仅摘要预算在手）；②切分行为随 docling 版本演化；③图块 `[IMAGE: id]` 占位符需与 HybridChunker 的 picture item 重新对接（按 prov page+bbox 匹配注入）。
+- **spike 实测（2026-09-18，eval 语料 Novel-quantum + 中文表格样例，默认 tokenizer——行为结构与 tokenizer 无关，token 数值待 nomic 复验）**：①**表格不完全独立**：小/中表与正文+题注合并为混合块（TEXT+CAPTION+TABLE 同块），大表/孤立表独立成块并按 token 拆分；②**大表拆分质量**：自研切 15 片的 Table 7 → HybridChunker 拆 4 片（2237–2872 字符），片首嵌表头；③**表格序列化为扁平 "列名, 行键 = 值" 文本，非 GFM、无行结构**（整表常压为一两行超长文本）——行片摘要的"行范围解析"前提不成立，需改为块摘要（输入=块文本+整表 GFM，输出≤120t 本块转述）；展示端 table_html 必须由适配器从 `TableItem.export_to_markdown()` 单独导出，不能依赖 chunk.text；④**contextualize() 确认拼标题**（`meta.headings` → ctx 文本前缀，实测 "4.1.3 Quantum circuit of S-box for C₃\n正文…"），适配器必须调 contextualize() 而非裸 chunk.text；⑤**公式留在正文块内不独立**（未富化为占位注释，富化后原地换 LaTeX）——自研"公式块前后邻文"后处理取消，归入后备蓝图；⑥**图片零文本**（图块仅 CAPTION 有字），[IMAGE: id] 注入为必需；⑦JSON 重放→HybridChunker 的 API 路径**已验证一致**（spike 01，2026-09-18，docling 2.123.1 / docling-core 2.92.0）：`save_as_json()` → `DoclingDocument.load_from_json()` 重建 → `HybridChunker.chunk()`，与新鲜解析直接切分产出**逐块相等**——两篇 eval 夹具（New-record：220 items/102 块；Novel-quantum：291 items/133 块）item 流、裸 chunk.text、contextualize 输出三层全等；成本：新鲜解析 52.5–71.7 s/篇 vs 重放 load 0.04 s+切分 0.48 s（约百倍，D-036 收益坐实）。注意 `contextualize` 是 **chunker 的方法**（`chunker.contextualize(chunk=…)`，非 chunk 方法），④的适配器调用形态按此落。
+- **关联**：[[D-036]]（重放是前提——切分器随 docling 版本走，实验回放全靠 JSON）；[[D-024 追记]]（摘要器 deepseek-flash 与出本机口径）；[[D-033 追记]]（重排 max_length 1024）；[CONTEXT.md](CONTEXT.md)（行片/行片摘要术语）。
+
 ---
 
 ## C. Provider / 运行时选型
@@ -191,6 +220,7 @@
 - **理由**：本场景里 LLM **只服务 ingestion 阶段**（chunk 精炼/元数据），**不服务查询阶段的答案生成**（场景明确不要综述，见 [spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md)）。所以本地 8B "推理慢"只影响一次性 ingest，不影响日常查询——这是本场景对本地化特别友好的地方。granite4.1:8b 在结构化抽取（标题/摘要/tags）任务上够用。
 - **代价 / 现状**：PR #7 `feat/local-english-literature-rag`。**code-review 暴露的预存 bug（已随本决策修复）**：`OllamaLLM._call_api`（文本 LLM 路径）历史遗留**缺 `trust_env=False`**（D-014 只补了 embedding/vision）——配置切到 ollama 后一旦文本 LLM 真被调用（`evaluation.enabled: true`）即踩 D-014 同款代理坑 502；且构造器不读 `settings.llm.base_url`（死配置），endpoint 是原生 `/api/chat` 而非 `/v1`，settings 的 `/v1` 后缀需剥离。两处已在同 PR 补齐 + 加 4 个测试锁住。
 - **关联**：[ollama_llm.py](src/libs/llm/ollama_llm.py)；[settings.yaml](config/settings.yaml)；[spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md)。与 [[D-013]]（被取代）、[[D-014]]（trust_env 模式源）、[[D-020]]（vision 本地化前置）关联。运行时前置：`ollama pull granite4.1:8b`。
+- **追记（2026-09-17，表格摘要重开"出本机"口径）**：表格行片摘要（D2 形态：摘要拼进 chunk.text，原文同块保留）的摘要器定为 deepseek-flash——表格内容将发往云端，本条"绝对本地"口径修订为：**查询/生成阶段不出本机；摄入期增强与评测判官允许云端**。依据：①评测判官已用 deepseek（发送检索上下文，同类暴露的既成事实）；②业界表格摘要普遍用强模型（[docs/表格实现方案调研.md](docs/表格实现方案调研.md)），本地 granite4.1:8b 转述数字的出错率无证据兜底。本地路径保留为降级选项（chunk 级另有"摘要失败退回原文形态"降级，承 [[D-005]]）。
 
 ### D-025 英文 BM25 分词改造：公共 tokenizer + 零依赖 Porter stemmer（索引/查询单一真相源）
 - **状态**：采纳。
