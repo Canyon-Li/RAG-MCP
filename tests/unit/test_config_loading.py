@@ -241,3 +241,49 @@ def test_parser_parse_cache_absent_is_none(tmp_path: Path) -> None:
     assert settings.ingestion is not None
     assert settings.ingestion.parser is not None
     assert settings.ingestion.parser.parse_cache is None
+
+
+def test_parser_ocr_mode_parsed(tmp_path: Path) -> None:
+    """ingestion.parser.ocr_mode is optional (ticket 03): auto/always/never."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config(
+            "        provider: docling\n        extract_images: true\n        ocr_mode: always"
+        ),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    assert settings.ingestion.parser.ocr_mode == "always"
+
+
+def test_parser_ocr_mode_defaults_to_auto(tmp_path: Path) -> None:
+    """Unconfigured ocr_mode = auto（有文本层默认不开 OCR，工单 03 的缺省）。"""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config("        provider: docling\n        extract_images: true"),
+    )
+
+    settings = load_settings(settings_path)
+
+    assert settings.ingestion is not None
+    assert settings.ingestion.parser is not None
+    assert settings.ingestion.parser.ocr_mode == "auto"
+
+
+def test_parser_ocr_mode_invalid_raises(tmp_path: Path) -> None:
+    """An unknown ocr_mode must fail fast at settings load, not at parse time."""
+    settings_path = tmp_path / "settings.yaml"
+    _write_yaml(
+        settings_path,
+        _minimal_config(
+            "        provider: docling\n        extract_images: true\n        ocr_mode: sometimes"
+        ),
+    )
+
+    with pytest.raises(SettingsError, match="ocr_mode"):
+        load_settings(settings_path)

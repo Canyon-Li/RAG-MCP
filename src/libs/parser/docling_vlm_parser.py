@@ -72,8 +72,13 @@ class DoclingVlmParser(DoclingParser):
             os.environ.get("DOCLING_VLM_MODEL_DIR", DEFAULT_MODEL_CACHE),
         )
 
-    def _build_converter(self) -> Any:
-        """Build a DocumentConverter backed by VlmPipeline + local Granite-Docling."""
+    def _build_converter(self, do_ocr: bool = True) -> Any:
+        """Build a DocumentConverter backed by VlmPipeline + local Granite-Docling.
+
+        ``do_ocr`` is accepted for signature compatibility with the base
+        hook (ticket 03) but ignored: VlmPipeline has no OCR stage — the VLM
+        reads the rendered page pixels directly, so OCR is inherent.
+        """
         from docling.datamodel.base_models import InputFormat
         from docling.document_converter import (
             DocumentConverter,

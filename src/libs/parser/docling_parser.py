@@ -24,6 +24,14 @@ extract_images, **kwargs)``. Falls back to ``PdfTextParser`` (MarkItDown) when
 docling raises (degradation chain: docling → pdf_text). Figure regions are
 rendered to PNG via PyMuPDF ``get_pixmap(clip=bbox)`` (captures both raster
 and vector graphics); the emitted image dicts match PdfTableParser's contract.
+
+OCR routing (ticket 03 / D-038): docling's default runs OCR on every file.
+Here the converter's ``do_ocr`` is decided per file — ``ocr_mode=auto``
+probes the first pages' text layer via PyMuPDF: digital PDFs (text present)
+parse with OCR off (faster, zero quality loss), no-text-layer files (scans)
+turn OCR on for that file only, so a scanned document can never silently
+index empty. Probe failure degrades conservatively to OCR on. ``always`` /
+``never`` force the flag and skip the probe.
 """
 
 from __future__ import annotations
@@ -36,7 +44,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from docling.document_converter import DocumentConverter
+    from docling.datamodel.base_models import InputFormat
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling_core.types.doc import DoclingDocument
 
     DOCLING_AVAILABLE = True
@@ -118,6 +128,21 @@ class DoclingParser(BaseParser):
     # batch resets that accumulation. 8 < 9 keeps every batch under the
     # observed failure threshold with a one-page safety margin.
     DEFAULT_PAGE_BATCH_SIZE = 8
+    # OCR routing (ticket 03 / D-038). Valid values for ocr_mode — duplicated
+    # from settings.PARSER_OCR_MODES (libs must not import core at module
+    # import time; both literals are pinned by unit tests).
+    VALID_OCR_MODES = frozenset({"auto", "always", "never"})
+    # auto-mode probe: pages to inspect for a text layer.
+    OCR_PROBE_PAGES = 3
+    # Text-layer threshold, TOTAL-based: stripped chars summed over the
+    # probed pages < pages × this value ⇒ no text layer ⇒ OCR on. Under a
+    # total a single text page can carry the file (e.g. full-page-image
+    # cover + digital body ⇒ treated as having a text layer).
+    OCR_TEXT_MIN_CHARS = 25
+    # Corroboration signal for the probe log: an image covering ≥ this
+    # fraction of the page (the classic scan signature). Log-only — see
+    # _probe_needs_ocr for why it does not gate the decision.
+    OCR_DOMINANT_IMAGE_RATIO = 0.7
 
     def __init__(
         self,
@@ -125,6 +150,7 @@ class DoclingParser(BaseParser):
         collection: str = "default",
         image_storage_dir: str | Path = "data/images",
         extract_images: bool = True,
+        ocr_mode: str = "auto",
         page_batch_size: int | None = None,
         parse_cache_dir: str | Path | None = None,
         **kwargs: Any,
@@ -136,6 +162,9 @@ class DoclingParser(BaseParser):
             collection: Collection name scoping the image storage directory.
             image_storage_dir: Base dir for extracted images (Factory-resolved).
             extract_images: Whether to extract embedded images via PyMuPDF.
+            ocr_mode: OCR strategy (ticket 03): ``auto`` probes the text
+                layer per file (digital → OCR off, scan → OCR on);
+                ``always`` / ``never`` force the converter flag.
             page_batch_size: Pages per docling conversion batch. None →
                 DEFAULT_PAGE_BATCH_SIZE (8). 1 disables batching value but not
                 the code path; values <= 0 mean "never batch" (single convert).
@@ -145,6 +174,7 @@ class DoclingParser(BaseParser):
 
         Raises:
             ImportError: If docling is not installed.
+            ValueError: If ocr_mode is not auto/always/never.
         """
         if not DOCLING_AVAILABLE:
             raise ImportError(
@@ -155,6 +185,12 @@ class DoclingParser(BaseParser):
         self.collection = collection
         self.extract_images = extract_images
         self.image_storage_dir = Path(image_storage_dir)
+        self.ocr_mode = str(ocr_mode).lower()
+        if self.ocr_mode not in self.VALID_OCR_MODES:
+            raise ValueError(
+                f"ocr_mode must be one of {sorted(self.VALID_OCR_MODES)}, "
+                f"got {ocr_mode!r}"
+            )
         self.page_batch_size = (
             page_batch_size
             if page_batch_size is not None
@@ -171,6 +207,11 @@ class DoclingParser(BaseParser):
         # calls). Kept off Document.metadata so it never leaks into chunk
         # metadata / stored payloads.
         self.last_parse_replayed = False
+        # Side-channel for the OCR routing decision of the last parse():
+        # the do_ocr the converter was built with (ticket 03). None when no
+        # conversion ran (cache replay) — the cached output already embeds
+        # the decision made under the same version stamp.
+        self.last_ocr_do_ocr: bool | None = None
         # Composition: pdf_text for fallback (degradation chain §7.7).
         self._pdf_text = PdfTextParser(
             settings=settings,
@@ -189,13 +230,16 @@ class DoclingParser(BaseParser):
         doc_id = f"doc_{doc_hash[:16]}"
 
         self.last_parse_replayed = False
+        self.last_ocr_do_ocr = None
         replayed = self._try_replay(path, doc_hash)
         if replayed is not None:
             sections, images = replayed
             self.last_parse_replayed = True
         else:
             try:
-                documents, complete = self._convert_batches(path)
+                do_ocr = self._decide_ocr(path)
+                self.last_ocr_do_ocr = do_ocr
+                documents, complete = self._convert_batches(path, do_ocr)
                 sections, images = self._walk_documents(path, doc_hash, documents)
             except Exception as e:
                 logger.warning(
@@ -249,6 +293,12 @@ class DoclingParser(BaseParser):
             "render_dpi": self.RENDER_DPI,
             "min_figure_size": self.MIN_FIGURE_SIZE,
             "page_batch_size": self.page_batch_size,
+            "ocr_mode": self.ocr_mode,
+            # Probe thresholds steer the do_ocr that actually entered the
+            # converter — retuning them changes the saved JSON, so they are
+            # D-036 first-class stamp members (same rule as ocr_mode).
+            "ocr_probe_pages": self.OCR_PROBE_PAGES,
+            "ocr_text_min_chars": self.OCR_TEXT_MIN_CHARS,
             "docling_version": _docling_package_version(),
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
@@ -380,8 +430,11 @@ class DoclingParser(BaseParser):
             logger.warning(f"Failed to render figure on page {page_num}: {e}")
             return None
 
-    def _convert_batches(self, path: Path) -> Tuple[List[Any], bool]:
+    def _convert_batches(self, path: Path, do_ocr: bool = True) -> Tuple[List[Any], bool]:
         """Convert the PDF batch-by-batch → (documents, all_batches_ok).
+
+        ``do_ocr`` (ticket 03 / D-038) is the per-file OCR decision threaded
+        into every batch's converter — all batches of one file must agree.
 
         Long PDFs are converted page-batch by page-batch, each batch with a
         FRESH DocumentConverter. Docling's preprocess accumulates native
@@ -398,7 +451,7 @@ class DoclingParser(BaseParser):
         documents: List[Any] = []
         complete = True
         for s, e in self._page_batches(path):
-            converter = self._build_converter()
+            converter = self._build_converter(do_ocr)
             try:
                 result = (
                     converter.convert(str(path), page_range=(s, e))
@@ -518,13 +571,117 @@ class DoclingParser(BaseParser):
             for start in range(1, n + 1, size)
         ]
 
-    def _build_converter(self) -> Any:
+    def _build_converter(self, do_ocr: bool = True) -> Any:
         """Build the DocumentConverter (default: StandardPdfPipeline).
+
+        ``do_ocr`` selects docling's OCR stage (ticket 03 / D-038): digital
+        PDFs (probed text layer) parse with OCR off — faster, zero quality
+        loss — while no-text-layer files keep OCR on. Default True keeps
+        subclass overrides signature-compatible even when they ignore it.
 
         Hook for subclasses to swap the pipeline — e.g. ``DoclingVlmParser``
         overrides this to use ``VlmPipeline`` backed by a remote VLM.
         """
-        return DocumentConverter()
+        pipeline_options = PdfPipelineOptions()
+        pipeline_options.do_ocr = do_ocr
+        return DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=pipeline_options,
+                ),
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # OCR routing (ticket 03 / D-038)
+    # ------------------------------------------------------------------
+
+    def _decide_ocr(self, path: Path) -> bool:
+        """Resolve the converter's do_ocr for *path* under the configured mode.
+
+        always/never short-circuit; auto probes the text layer. A failed
+        probe degrades conservatively to OCR on — the pre-D-038 docling
+        default — because the reverse (OCR off for an unreadable file)
+        risks a silently empty index (ticket 03: 探测失败不阻断摄入).
+        """
+        if self.ocr_mode == "always":
+            logger.info(f"ocr decision {path.name}: do_ocr=True (mode=always)")
+            return True
+        if self.ocr_mode == "never":
+            logger.info(f"ocr decision {path.name}: do_ocr=False (mode=never)")
+            return False
+        needs = self._probe_needs_ocr(path)
+        if needs is None:
+            logger.warning(
+                f"OCR probe failed for {path}, degrading to do_ocr=True "
+                f"(mode=auto) — conservative default, ingestion continues"
+            )
+            return True
+        return needs
+
+    def _probe_needs_ocr(self, path: Path) -> Optional[bool]:
+        """Probe the first pages' text layer → True when OCR is needed.
+
+        Returns None when the probe itself fails (unreadable PDF, PyMuPDF
+        missing) — the caller degrades conservatively. Reads only the first
+        OCR_PROBE_PAGES pages: cheap, and scan-vs-digital is a per-document
+        property.
+
+        Decision signal is TEXT VOLUME ONLY — the stripped chars summed
+        over the probed pages must fall below pages × OCR_TEXT_MIN_CHARS
+        for OCR to engage (total-based: one text-bearing page carries the
+        file).
+        The full-page-image scan signature is computed for the log line but
+        deliberately does NOT gate the decision: a textless page without a
+        dominant image (vector-drawn glyphs) needs OCR just as badly, and
+        the failure asymmetry is stark — a false-positive OCR run costs
+        time, a false-negative silently empties the index.
+        """
+        if not PYMUPDF_AVAILABLE:
+            return None
+        try:
+            with fitz.open(path) as d:
+                pages = min(d.page_count, self.OCR_PROBE_PAGES)
+                if pages <= 0:
+                    return None
+                chars = sum(
+                    len(d[i].get_text().strip()) for i in range(pages)
+                )
+                big_image_pages = sum(
+                    1
+                    for i in range(pages)
+                    if self._has_dominant_image(d[i])
+                )
+        except Exception as e:
+            logger.warning(f"OCR probe failed for {path}: {e}")
+            return None
+        needs = chars < pages * self.OCR_TEXT_MIN_CHARS
+        logger.info(
+            f"OCR probe {path.name}: {chars} text chars over {pages} probed "
+            f"page(s), {big_image_pages} full-page-image page(s) → "
+            f"needs_ocr={needs}"
+        )
+        # bool() to shed fitz's Any (page_count is untyped) — keeps mypy honest.
+        return bool(needs)
+
+    @classmethod
+    def _has_dominant_image(cls, page: Any) -> bool:
+        """True when one page image covers ≥ OCR_DOMINANT_IMAGE_RATIO of it.
+
+        Log corroboration only (see _probe_needs_ocr). Any lookup error
+        simply reports "no dominant image" — it must never fail the probe.
+        """
+        try:
+            page_area = abs(page.rect)
+            for info in page.get_image_info():
+                bbox = info.get("bbox")
+                if bbox and abs(fitz.Rect(bbox)) >= (
+                    page_area * cls.OCR_DOMINANT_IMAGE_RATIO
+                ):
+                    return True
+        except Exception:
+            return False
+        return False
 
     def _item_to_section(
         self, item: Any, ddoc: Any

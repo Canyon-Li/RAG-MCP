@@ -88,7 +88,9 @@ class _ConverterProbe:
         probe = self
 
         class _Converter:
-            def __init__(self):
+            def __init__(self, **_kwargs):
+                # Accepts (and drops) ctor kwargs — the real _build_converter
+                # passes format_options=… (ticket 03 OCR wiring).
                 probe.constructed += 1
 
             def convert(self, *args, **kwargs):
@@ -424,7 +426,7 @@ def test_partial_batch_failure_writes_no_cache(settings, fake_pdf, tmp_path):
     converters = iter([probe.factory()(), boom])
 
     with patch("src.libs.parser.docling_parser.DocumentConverter",
-               side_effect=lambda: next(converters)), \
+               side_effect=lambda **_kw: next(converters)), \
          patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False), \
          patch.object(DoclingParser, "_page_count", return_value=2):
         parser = DoclingParser(

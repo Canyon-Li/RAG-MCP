@@ -52,6 +52,7 @@
 | D-035 | 2026-09-13 | docling 分批转换（16GB RAM workaround）同机间歇丢段 → `page_batch_size` 配置化并默认 0（单次完整转换，新机器内存足够且确定性可复现） | 采纳 | feat/t23-corpus-integrity |
 | D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 已实现（09-18 追记） | 本文件 B 节 |
 | D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 已拍板待实现 | 本文件 B 节 |
+| D-038 | 2026-09-18 | OCR 探测路由：docling 默认全量 OCR 改为按文件探测文本层（auto/always/never 三态），数字 PDF 关 OCR 提速、扫描件不静默空索引 | 已实现 | 本文件 B 节 |
 
 ---
 
@@ -204,6 +205,15 @@
 - **代价 / 实现期验证点**：①组成细节让渡上游（自研的逐项预算不再生效，仅摘要预算在手）；②切分行为随 docling 版本演化；③图块 `[IMAGE: id]` 占位符需与 HybridChunker 的 picture item 重新对接（按 prov page+bbox 匹配注入）。
 - **spike 实测（2026-09-18，eval 语料 Novel-quantum + 中文表格样例，默认 tokenizer——行为结构与 tokenizer 无关，token 数值待 nomic 复验）**：①**表格不完全独立**：小/中表与正文+题注合并为混合块（TEXT+CAPTION+TABLE 同块），大表/孤立表独立成块并按 token 拆分；②**大表拆分质量**：自研切 15 片的 Table 7 → HybridChunker 拆 4 片（2237–2872 字符），片首嵌表头；③**表格序列化为扁平 "列名, 行键 = 值" 文本，非 GFM、无行结构**（整表常压为一两行超长文本）——行片摘要的"行范围解析"前提不成立，需改为块摘要（输入=块文本+整表 GFM，输出≤120t 本块转述）；展示端 table_html 必须由适配器从 `TableItem.export_to_markdown()` 单独导出，不能依赖 chunk.text；④**contextualize() 确认拼标题**（`meta.headings` → ctx 文本前缀，实测 "4.1.3 Quantum circuit of S-box for C₃\n正文…"），适配器必须调 contextualize() 而非裸 chunk.text；⑤**公式留在正文块内不独立**（未富化为占位注释，富化后原地换 LaTeX）——自研"公式块前后邻文"后处理取消，归入后备蓝图；⑥**图片零文本**（图块仅 CAPTION 有字），[IMAGE: id] 注入为必需；⑦JSON 重放→HybridChunker 的 API 路径**已验证一致**（spike 01，2026-09-18，docling 2.123.1 / docling-core 2.92.0）：`save_as_json()` → `DoclingDocument.load_from_json()` 重建 → `HybridChunker.chunk()`，与新鲜解析直接切分产出**逐块相等**——两篇 eval 夹具（New-record：220 items/102 块；Novel-quantum：291 items/133 块）item 流、裸 chunk.text、contextualize 输出三层全等（默认 tokenizer 口径；等价性机理上与 tokenizer 无关，nomic+1000 正式口径待适配器落地时复验）；成本：新鲜解析 52.5–71.7 s/篇 vs 重放 load 0.04 s+切分 0.48 s（约百倍，D-036 收益坐实）。注意 `contextualize` 是 **chunker 的方法**（`chunker.contextualize(chunk=…)`，非 chunk 方法），④的适配器调用形态按此落。
 - **关联**：[[D-036]]（重放是前提——切分器随 docling 版本走，实验回放全靠 JSON）；[[D-024 追记]]（摘要器 deepseek-flash 与出本机口径）；[[D-033 追记]]（重排 max_length 1024）；[CONTEXT.md](CONTEXT.md)（行片/行片摘要术语）。
+
+### D-038 OCR 探测路由：docling 默认全量 OCR 改按文件探测文本层
+
+- **碰到**：[工单 03](../.scratch/ingestion-revamp/issues/03-ocr-probe-routing.md)（摄入端改造）。docling `PdfPipelineOptions.do_ocr` 默认 True——库里原生数字 PDF 全都在白付 OCR 成本（探测脚本实测同一扫描件 OCR 开/关 7.0s 级差异，数字长文更甚）；反过来直接全局关掉，扫描件会**静默空索引**（docling 无文本层拿不到内容 → 空段 → 降级 pdf_text 同样拿不到）。
+- **行业做法**：文档处理管线普遍先探测文本层（text layer detection）再决定 OCR 路径（scan-digital 分流是 OCR 系统标配）；docling 自身无此分流，do_ocr 是全局开关。
+- **我的解法**：`ingestion.parser.ocr_mode` 三态（`auto`/`always`/`never`，缺省 auto，非法值 settings 层 fail-fast）。auto 时摄入前用 PyMuPDF 探测前 3 页文本量（总量 < 3×25 字符判无文本层）→ 仅对该文件 `do_ocr=True`；探测失败（文件读不出/页数≤0）保守降级开 OCR 并告警，不阻断摄入。实现挂点：`_decide_ocr` → `_convert_batches(path, do_ocr)` → `_build_converter(do_ocr)` 真实构造 `PdfPipelineOptions`；OCR 引擎实测走 docling 2.123 的 OcrAutoOptions → RapidOCR（随包自带，本机开箱可用）。`ocr_mode` 与探针阈值（`OCR_PROBE_PAGES`/`OCR_TEXT_MIN_CHARS`）并入 D-036 版本戳（[[D-036]] 追记预留的第一类成分——转换 options 变了旧 JSON 就是过期的，策略/阈值改动自动重解析；spec 审查指出初版只收了策略漏了阈值，已补）。
+- **为什么不用别的**：① 探测判据**只用文本量，不用「整页大图」联判**（与工单原文措辞有偏差）：无文本但无大图的页（矢量绘制字形）同样必须 OCR，且误报代价不对称——多开 OCR 只费时间，漏开 OCR 静默空索引；整页大图只进日志作旁证。② 探测失败保守方向=开（docling 旧行为），不是关。③ 不做页级 OCR 混合（一份扫描封面+数字正文的文件整体走一边）——粒度按工单定在文件级，混合件靠图形提取兜底封面。
+- **代价 / 现状**：数字 PDF 解析提速（省 RapidOCR 逐页跑）；auto 下纯扫描件行为不变（本来 do_ocr=True）；`ocr_mode` 进版本戳使旧 D-036 缓存条目一次性失效（同分支未发布，无实际代价）。测试：单测 13 项（三态路由/真 fitz 夹具分流/探测失败降级可查日志/converter 真收到 do_ocr/戳随策略变化）+ 真 docling 集成 3 项（扫描夹具 OCR 真读回文本、数字件关 OCR、强制开兜底），全绿。
+- **关联**：[工单 03](../.scratch/ingestion-revamp/issues/03-ocr-probe-routing.md)；[docling_parser.py](src/libs/parser/docling_parser.py)（`_decide_ocr`/`_probe_needs_ocr`/`_build_converter`）；[[D-036]]（版本戳成分表——转换 options 属第一类必须进戳）；[[D-035]]（同一 `_build_converter` 挂点的前例：每批新 converter）。
 
 ---
 

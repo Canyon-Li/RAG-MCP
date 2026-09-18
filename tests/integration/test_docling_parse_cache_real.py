@@ -33,9 +33,11 @@ def _parse_with_probe(cache_dir: Path, collection_dir: Path, counter: dict):
     """One full parse; DocumentConverter constructions are counted."""
     from docling.document_converter import DocumentConverter
 
-    def _counting_factory():
+    def _counting_factory(**kwargs):
+        # Forwards ctor kwargs (format_options from ticket 03's OCR wiring)
+        # so the counter wraps the real constructor faithfully.
         counter["constructed"] = counter.get("constructed", 0) + 1
-        return DocumentConverter()
+        return DocumentConverter(**kwargs)
 
     with patch(
         "src.libs.parser.docling_parser.DocumentConverter", _counting_factory

@@ -125,6 +125,13 @@ class ParserFactory:
             page_batch_size = getattr(parser_cfg, "page_batch_size", None)
             if isinstance(page_batch_size, int):
                 extra_kwargs["page_batch_size"] = page_batch_size
+            # Ticket 03 / D-038: OCR routing policy (auto/always/never).
+            # isinstance guard for the same mock-tolerance reason as
+            # page_batch_size above — unconfigured settings objects keep
+            # the parser's built-in default.
+            ocr_mode = getattr(parser_cfg, "ocr_mode", None)
+            if isinstance(ocr_mode, str):
+                extra_kwargs["ocr_mode"] = ocr_mode
             # D-036: forward the parse-cache root only when the cache is
             # configured AND enabled — absence of the kwarg keeps providers
             # cache-free (pre-D-036 behaviour). isinstance guard for the

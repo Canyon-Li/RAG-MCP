@@ -109,6 +109,7 @@ ingestion:
     provider: "docling"  # 默认 parser = Docling（DocLayNet + TableFormer）；矢量图 bbox 渲染见 D-019，降级链 docling→pdf_text 见 D-011
     extract_images: true  # extract embedded images, insert [IMAGE: id] placeholders
     page_batch_size: 0  # T23: 单次完整转换——分批转换（每批新 converter）同机间歇丢段；单批确定且完整（新机器内存足够；分批本是 16GB RAM workaround）
+    ocr_mode: "auto"  # 工单03 OCR 探测路由：auto=按文件探测文本层（数字 PDF 不开 OCR 提速；无文本层仅对该文件自动开，不静默空索引）；always=强制开（docling 旧默认）；never=强制关
     parse_cache:  # D-036 解析缓存：--force 重灌从无损 JSON 重放（键=文件 SHA256），不再重付 docling 解析；版本戳不符自动重解析
       enabled: true  # 缺省 true；整个 parse_cache 块缺席 = 缓存关闭（pre-D-036 行为，块内不写 enabled 也是开）
       dir: "data/parsed"  # gitignored；条目布局 {dir}/{sha256}/manifest.json + batch_NNN.json

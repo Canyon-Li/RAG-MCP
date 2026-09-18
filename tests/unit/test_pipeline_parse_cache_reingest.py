@@ -100,7 +100,9 @@ class _ConverterProbe:
         probe = self
 
         class _Converter:
-            def __init__(self):
+            def __init__(self, **_kwargs):
+                # Accepts (and drops) ctor kwargs — real _build_converter
+                # passes format_options=… (ticket 03 OCR wiring).
                 probe.constructed += 1
 
             def convert(self, *args, **kwargs):

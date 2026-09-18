@@ -307,6 +307,25 @@ class TestParserFactoryCreate:
         assert parser.extract_images is False  # read from legacy loader block
 
 
+    def test_create_passes_ocr_mode(self):
+        """Factory forwards parser.ocr_mode (ticket 03 OCR 探测路由三态)."""
+        ParserFactory.register_provider("fake", FakeParser)
+
+        settings = self._settings("fake")
+        settings.ingestion.parser.ocr_mode = "never"
+        parser = ParserFactory.create(settings, collection="c")
+        assert parser.init_kwargs.get("ocr_mode") == "never"
+
+    def test_create_omits_ocr_mode_when_unset(self):
+        """Unconfigured ocr_mode (mocks / old configs) keeps the parser default."""
+        ParserFactory.register_provider("fake", FakeParser)
+
+        settings = self._settings("fake")
+        del settings.ingestion.parser.ocr_mode
+        parser = ParserFactory.create(settings, collection="c")
+        assert "ocr_mode" not in parser.init_kwargs
+
+
 class TestBuiltinAliases:
     """K3: pdf_text is an explicit alias for pdf (both → PdfTextParser).
 

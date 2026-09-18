@@ -393,7 +393,9 @@ def _make_batch_converter(items_by_batch):
     calls = {"n": 0, "log": []}
 
     class _Factory:
-        def __call__(self):
+        def __call__(self, **_ctor_kwargs):
+            # Accepts ctor kwargs (real _build_converter passes format_options,
+            # ticket 03) and drops them — this mock counts constructions.
             idx = calls["n"]
             calls["n"] += 1
             conv = _make_converter(items_by_batch[idx])
@@ -479,7 +481,7 @@ def test_partial_batch_failure_keeps_earlier_batches(
 
     with patch(
         "src.libs.parser.docling_parser.DocumentConverter",
-        side_effect=lambda: next(converters),
+        side_effect=lambda **_kw: next(converters),
     ), \
          patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False), \
          patch.object(DoclingParser, "_page_count", return_value=10):

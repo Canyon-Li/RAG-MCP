@@ -80,6 +80,19 @@ def _require_bool(data: Dict[str, Any], key: str, path: str) -> bool:
     return value
 
 
+def _require_choice(
+    data: Dict[str, Any], key: str, choices: frozenset, path: str
+) -> str:
+    """Require a string value drawn from *choices* (fail-fast, e.g. OCR mode)."""
+    value = _require_value(data, key, path)
+    if not isinstance(value, str) or value.lower() not in choices:
+        raise SettingsError(
+            f"Expected one of {sorted(choices)} for field: {path}.{key}, "
+            f"got {value!r}"
+        )
+    return value.lower()
+
+
 def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     value = _require_value(data, key, path)
     if not isinstance(value, list):
@@ -188,6 +201,12 @@ class ParseCacheSettings:
     dir: str = "data/parsed"
 
 
+# Valid values for ingestion.parser.ocr_mode (ticket 03 / D-038). The set is
+# duplicated (not imported) in DoclingParser — libs must not depend on core
+# at import time (see parser_factory's lazy resolve_path import).
+PARSER_OCR_MODES = frozenset({"auto", "always", "never"})
+
+
 @dataclass(frozen=True)
 class ParserSettings:
     """Pluggable document parser configuration (K1, renamed from LoaderSettings).
@@ -198,6 +217,14 @@ class ParserSettings:
     """
     provider: str
     extract_images: bool = True
+    # OCR strategy for the docling converter (ticket 03 / D-038):
+    # ``auto``    — probe the text layer per file; digital PDFs parse with
+    #               OCR off (faster, zero quality loss), no-text-layer files
+    #               (scans) get OCR for that file only.
+    # ``always``  — force OCR on (pre-D-038 docling default behaviour).
+    # ``never``   — force OCR off. The literal set is duplicated (validated)
+    # in DoclingParser — libs must not import core at module import time.
+    ocr_mode: str = "auto"
     # Optional override of the parser's conversion batching. ``0`` means a
     # single unrestricted convert — the T23 corpus-integrity fix: docling's
     # batched conversion (fresh converter per batch) loses sections
@@ -282,6 +309,12 @@ class Settings:
                     page_batch_size=(
                         _require_int(parser_cfg, "page_batch_size", "ingestion.parser")
                         if "page_batch_size" in parser_cfg else None
+                    ),
+                    ocr_mode=(
+                        _require_choice(
+                            parser_cfg, "ocr_mode", PARSER_OCR_MODES,
+                            "ingestion.parser")
+                        if "ocr_mode" in parser_cfg else "auto"
                     ),
                     parse_cache=parse_cache_settings,
                 )
