@@ -130,3 +130,17 @@ ingestion:
   metadata_enricher:
     use_llm: false # Set to true to enable LLM-based enrichment (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based enrichment
+
+  # Table-chunk summarizer (工单05): section_type=table 的块获得 LLM 转述（≤120 token）
+  # 拼在块文本前部——语义型表格查询走摘要，不依赖数字行的向量。按内容哈希持久缓存
+  # （data/db/table_summary_cache.db），同一表格重灌不重复调用；调用失败该块退回无摘要
+  # 形态，不阻塞摄入（D-005）。独立 provider/model（D-024 追记：摄入期允许云端），
+  # 可整块切回本地（如 provider "ollama" / model "granite4.1:8b" / base_url "http://localhost:11434"）。
+  # 块缺席 = 关（pre-工单05 行为）。
+  table_summarizer:
+    enabled: true
+    provider: "deepseek"
+    model: "deepseek-flash"
+    max_summary_tokens: 120  # API 级硬上限；prompt 同步要求 ≤120 token
+    # base_url / api_key 可选覆盖；不写 = provider 与主 llm 块相同时继承主块，
+    # 否则用 provider 自身默认（deepseek 的 endpoint 不该喂给 ollama）。

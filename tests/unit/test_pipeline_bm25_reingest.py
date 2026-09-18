@@ -92,6 +92,8 @@ def _make_fake_pipeline(bm25_dir: Path, chunk_texts):
     fp.metadata_enricher.transform.return_value = chunks
     fp.image_captioner = MagicMock()
     fp.image_captioner.transform.return_value = chunks
+    fp.table_summarizer = MagicMock()
+    fp.table_summarizer.transform.return_value = chunks
 
     def _stat(text):
         tokens = [t.strip(".,").lower() for t in text.split()]

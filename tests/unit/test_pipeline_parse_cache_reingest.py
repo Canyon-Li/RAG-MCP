@@ -148,6 +148,8 @@ def _make_pipeline(bm25_dir: Path, cache_dir: Path, pdf_path: Path,
     fp.metadata_enricher.transform.side_effect = lambda chunks, trace=None: chunks
     fp.image_captioner = MagicMock()
     fp.image_captioner.transform.side_effect = lambda chunks, trace=None: chunks
+    fp.table_summarizer = MagicMock()
+    fp.table_summarizer.transform.side_effect = lambda chunks, trace=None: chunks
 
     def _stat(text):
         tokens = [t.strip(".,").lower() for t in text.split()]

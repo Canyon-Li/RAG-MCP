@@ -83,6 +83,8 @@ def _ingest(bm25_dir: Path, source_path: str, texts) -> list:
     fp.metadata_enricher.transform.return_value = chunks
     fp.image_captioner = MagicMock()
     fp.image_captioner.transform.return_value = chunks
+    fp.table_summarizer = MagicMock()
+    fp.table_summarizer.transform.return_value = chunks
 
     def _stat(text):
         tf = {}

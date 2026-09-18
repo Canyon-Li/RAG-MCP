@@ -74,6 +74,9 @@ class FakePipeline:
         self.image_captioner = MagicMock()
         self.image_captioner.transform.return_value = chunks
 
+        self.table_summarizer = MagicMock()
+        self.table_summarizer.transform.return_value = chunks
+
         self.batch_processor = MagicMock()
         self.batch_processor.process.return_value = FakeBatchResult()
 

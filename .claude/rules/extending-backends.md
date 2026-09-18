@@ -32,7 +32,7 @@ Then verify with `<Factory>.list_providers()` or by reading the registration blo
 | Reranker | `BaseReranker` (`libs/reranker/`) | `RerankerFactory` | llm, cross_encoder |
 | Evaluator | `BaseEvaluator` (`libs/evaluator/`) | `EvaluatorFactory` | custom, ragas (lazy), composite (lazy) |
 | Parser | `BaseParser` (`libs/parser/`) | `ParserFactory` | pdf, pdf_text, pdf_table, docling, docling_vlm, docx |
-| Transform | `BaseTransform` (`ingestion/transform/`) | none — wired directly in `IngestionPipeline` | chunk_refiner, metadata_enricher, image_captioner |
+| Transform | `BaseTransform` (`ingestion/transform/`) | none — wired directly in `IngestionPipeline` | chunk_refiner, metadata_enricher, image_captioner, table_summarizer |
 
 Note: Vision LLM providers are registered on `LLMFactory._VISION_PROVIDERS` (a separate registry on the same factory) and instantiated via `LLMFactory.create_vision_llm(settings)` — `ImageCaptioner` calls this in its `__init__`. There is no separate VisionFactory.
 

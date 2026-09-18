@@ -36,6 +36,7 @@ from src.ingestion.chunking.document_chunker import create_document_chunker
 from src.ingestion.transform.chunk_refiner import ChunkRefiner
 from src.ingestion.transform.metadata_enricher import MetadataEnricher
 from src.ingestion.transform.image_captioner import ImageCaptioner
+from src.ingestion.transform.table_summarizer import TableSummarizer
 from src.ingestion.embedding.dense_encoder import DenseEncoder
 from src.ingestion.embedding.sparse_encoder import SparseEncoder
 from src.ingestion.embedding.batch_processor import BatchProcessor
@@ -179,6 +180,13 @@ class IngestionPipeline:
         self.image_captioner = ImageCaptioner(settings, image_storage=self.image_storage)
         has_vision = self.image_captioner.llm is not None
         logger.info(f"  ✓ ImageCaptioner initialized (vision_enabled={has_vision})")
+
+        # 4d (ticket 05 / D-024 追记): table-chunk summaries — runs last in
+        # stage 4 so the summary prefix lands at the very front of the final
+        # chunk text. LLM init failure degrades to a no-op (D-005).
+        self.table_summarizer = TableSummarizer(settings)
+        _ts_ready = self.table_summarizer.enabled and self.table_summarizer.llm is not None
+        logger.info(f"  ✓ TableSummarizer initialized (enabled={self.table_summarizer.enabled}, llm_ready={_ts_ready})")
         
         # Stage 5: Encoders
         embedding = EmbeddingFactory.create(settings)
@@ -396,21 +404,30 @@ class IngestionPipeline:
             # image_captioner.py 的 [IMAGE: id]\n(Description: {caption}) 缝入）。
             captioned = sum(1 for c in chunks if "(Description:" in c.text)
             logger.info(f"      Chunks with captions: {captioned}")
-            
+
+            # 4d: Table Summarization (ticket 05) — summary prefix on
+            # section_type=table chunks; failures degrade to no-summary form.
+            logger.info("  4d. Table Summarization...")
+            chunks = self.table_summarizer.transform(chunks, trace)
+            table_summarized = sum(1 for c in chunks if c.metadata.get("table_summarized_by") == "llm")
+            logger.info(f"      Table chunks with summaries: {table_summarized}")
+
             stages["transform"] = {
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
                 "metadata_enricher": {"llm": enriched_by_llm, "rule": enriched_by_rule},
-                "image_captioner": {"captioned_chunks": captioned}
+                "image_captioner": {"captioned_chunks": captioned},
+                "table_summarizer": {"summarized_chunks": table_summarized}
             }
             _elapsed_transform = (time.monotonic() - _t0_transform) * 1000.0
             if trace is not None:
                 trace.record_stage("transform", {
-                    "method": "refine+enrich+caption",
+                    "method": "refine+enrich+caption+table_summary",
                     "refined_by_llm": refined_by_llm,
                     "refined_by_rule": refined_by_rule,
                     "enriched_by_llm": enriched_by_llm,
                     "enriched_by_rule": enriched_by_rule,
                     "captioned_chunks": captioned,
+                    "table_summarized_chunks": table_summarized,
                     "chunks": [
                         {
                             "chunk_id": c.id,
@@ -419,6 +436,7 @@ class IngestionPipeline:
                             "char_len": len(c.text),
                             "refined_by": c.metadata.get("refined_by", ""),
                             "enriched_by": c.metadata.get("enriched_by", ""),
+                            "table_summarized_by": c.metadata.get("table_summarized_by", ""),
                             "title": c.metadata.get("title", ""),
                             "tags": c.metadata.get("tags", []),
                             "summary": c.metadata.get("summary", ""),
@@ -599,6 +617,7 @@ class IngestionPipeline:
     
     def close(self) -> None:
         """Clean up resources."""
+        self.table_summarizer.close()
         self.image_storage.close()
 
 

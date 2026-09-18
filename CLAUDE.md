@@ -85,7 +85,7 @@ Observability           ─ src/observability/   trace context + Streamlit dashb
 
 ### Two pipelines, both traced end-to-end
 
-- **Ingestion** (`src/ingestion/pipeline.py::IngestionPipeline`): FileIntegrity (SHA256 skip) → `ParserFactory.create()` (provider from `ingestion.parser`) → Chunking (strategy from `ingestion.chunker`: docling-parsed documents go through the HybridChunker adapter — heading contextualization / table GFM in `table_html` / contains_* type flags; everything else, or a config switch-back, uses the original recursive `DocumentChunker`) → Transform (ChunkRefiner + MetadataEnricher + ImageCaptioner) → Dense+Sparse encoding → Upsert (Chroma + BM25 + ImageStorage).
+- **Ingestion** (`src/ingestion/pipeline.py::IngestionPipeline`): FileIntegrity (SHA256 skip) → `ParserFactory.create()` (provider from `ingestion.parser`) → Chunking (strategy from `ingestion.chunker`: docling-parsed documents go through the HybridChunker adapter — heading contextualization / table GFM in `table_html` / contains_* type flags; everything else, or a config switch-back, uses the original recursive `DocumentChunker`) → Transform (ChunkRefiner + MetadataEnricher + ImageCaptioner + TableSummarizer) → Dense+Sparse encoding → Upsert (Chroma + BM25 + ImageStorage).
 - **Query** (`src/core/query_engine/`): QueryProcessor → parallel Dense (embedding cosine) + Sparse (BM25) → **RRF fusion** → optional Rerank (none / cross_encoder / llm) → ResponseBuilder (citations + multimodal assembly).
 
 Both pipelines take an explicit `TraceContext` (`src/core/trace/`) that records each stage's `method`/`provider`/latency and flushes one JSON Lines record to `logs/traces.jsonl`. The dashboard reads that file — it has no other API. **Stage names are stable categories** (`retrieval`, `rerank`, …); the concrete method goes in a `method`/`details` field so swapping backends doesn't break dashboard rendering.
@@ -122,7 +122,7 @@ Image extraction method is **parser-specific** (capability boundary — see DEV_
 - **Windows console + Chinese output.** CLI scripts set `sys.stdout/stderr` to UTF-8 wrappers on `win32`; match this if adding scripts that print non-ASCII.
 - **Tests insert repo root onto `sys.path`** (`conftest.py` and each script), so `from src.…` imports work without installing the package. Integration/e2e tests shell out to `python -m src.mcp_server.server` as a subprocess.
 - **Adding a new document format:** subclass `BaseParser` + `ParserFactory.register_provider()`; the rest of the pipeline is format-agnostic. Details & registered parsers in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
-- **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`) — edit there, not in code.
+- **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`, `table_summary.txt`) — edit there, not in code.
 - **Design decisions & pitfalls live in [DEV_CHANGELOG.md](DEV_CHANGELOG.md)** — check it before changing providers / parsers / runtime env to avoid repeating past traps (e.g. local-service httpx needs `trust_env=False`; use conda, not `.venv`; completion models can't be wrapped in a chat template).
 
 ## Skills (agent-driven workflow)

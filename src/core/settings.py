@@ -236,6 +236,29 @@ class ChunkerSettings:
 
 
 @dataclass(frozen=True)
+class TableSummarizerSettings:
+    """Table-chunk summary transform (ticket 05 / D-024 追记).
+
+    ``section_type=table`` chunks get an LLM paraphrase (≤ max_summary_tokens)
+    prepended to the chunk text so semantic queries can hit table content
+    without relying on the number rows' vectors. Independent provider/model:
+    the summarizer may point at deepseek-flash while the main ``llm`` block
+    goes anywhere else — or be switched back to a local model (e.g. ollama
+    granite). An absent block means the transform is off (pre-ticket
+    behaviour, old configs keep working).
+    """
+    enabled: bool = True
+    provider: str = "deepseek"
+    model: str = "deepseek-flash"
+    # API-level hard cap on summary length; the prompt asks for ≤120 tokens.
+    max_summary_tokens: int = 120
+    # Optional endpoint overrides. Unset = inherit the main llm block when
+    # the provider matches, else fall back to the provider's own default.
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class ParserSettings:
     """Pluggable document parser configuration (K1, renamed from LoaderSettings).
 
@@ -275,6 +298,7 @@ class IngestionSettings:
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
     parser: Optional[ParserSettings] = None  # K1: 可插拔 Parser 配置（缺省默认 pdf）
     chunker: Optional[ChunkerSettings] = None  # 工单04/D-037: 切分策略（缺省 = recursive 旧路径）
+    table_summarizer: Optional[TableSummarizerSettings] = None  # 工单05: 表格块摘要（缺省 = 关）
 
 
 @dataclass(frozen=True)
@@ -392,6 +416,46 @@ class Settings:
                         "no HF network access)"
                     )
 
+            # Ticket 05: table-chunk summarizer (optional block; absent = off).
+            table_summarizer_settings = None
+            if "table_summarizer" in ingestion:
+                ts_cfg = _require_mapping(
+                    ingestion, "table_summarizer", "ingestion.table_summarizer")
+                table_summarizer_settings = TableSummarizerSettings(
+                    enabled=(
+                        _require_bool(ts_cfg, "enabled", "ingestion.table_summarizer")
+                        if "enabled" in ts_cfg else True
+                    ),
+                    provider=(
+                        _require_str(ts_cfg, "provider", "ingestion.table_summarizer")
+                        if "provider" in ts_cfg else "deepseek"
+                    ),
+                    model=(
+                        _require_str(ts_cfg, "model", "ingestion.table_summarizer")
+                        if "model" in ts_cfg else "deepseek-flash"
+                    ),
+                    max_summary_tokens=(
+                        _require_int(
+                            ts_cfg, "max_summary_tokens", "ingestion.table_summarizer")
+                        if "max_summary_tokens" in ts_cfg else 120
+                    ),
+                    base_url=(
+                        _require_str(ts_cfg, "base_url", "ingestion.table_summarizer")
+                        if "base_url" in ts_cfg else None
+                    ),
+                    api_key=(
+                        _require_str(ts_cfg, "api_key", "ingestion.table_summarizer")
+                        if "api_key" in ts_cfg else None
+                    ),
+                )
+                if table_summarizer_settings.max_summary_tokens <= 0:
+                    # A zero/negative budget would ask the API for nothing —
+                    # fail fast instead of silently producing empty summaries.
+                    raise SettingsError(
+                        "ingestion.table_summarizer.max_summary_tokens must be "
+                        "a positive integer"
+                    )
+
             ingestion_settings = IngestionSettings(
                 chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
                 chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
@@ -401,6 +465,7 @@ class Settings:
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
                 parser=parser_settings,
                 chunker=chunker_settings,
+                table_summarizer=table_summarizer_settings,
             )
 
         vision_llm_settings = None

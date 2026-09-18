@@ -52,6 +52,8 @@ def _make_fake_pipeline() -> object:
     fp.metadata_enricher.transform.return_value = chunks
     fp.image_captioner = MagicMock()
     fp.image_captioner.transform.return_value = chunks
+    fp.table_summarizer = MagicMock()
+    fp.table_summarizer.transform.return_value = chunks
 
     # Stage 5: encoding
     batch_result = MagicMock()
