@@ -128,3 +128,17 @@ Image extraction method is **parser-specific** (capability boundary — see DEV_
 ## Skills (agent-driven workflow)
 
 `.claude/skills/` now contains only `skill-creator` (a meta-skill for authoring new skills). The build-time skills that originally constructed this repo (`auto-coder`, `qa-tester`, `setup`, `package`, `resume-writer`) were retired and removed once the project reached its current shape — they were scaffolding, not part of the runtime. Do work manually rather than invoking them.
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown tracker: implementation tickets live under `.scratch/<feature>/issues/` (gitignored); durable specs go to `docs/superpowers/specs/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: glossary in `CONTEXT.md`; ADRs are the D-0xx entries in `DEV_CHANGELOG.md` (there is no `docs/adr/`). See `docs/agents/domain.md`.
