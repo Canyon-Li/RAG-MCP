@@ -233,7 +233,7 @@ class DoclingParser(BaseParser):
         self.last_ocr_do_ocr = None
         replayed = self._try_replay(path, doc_hash)
         if replayed is not None:
-            sections, images = replayed
+            sections, images, documents = replayed
             self.last_parse_replayed = True
         else:
             try:
@@ -266,6 +266,14 @@ class DoclingParser(BaseParser):
             "doc_type": "pdf",
             "doc_hash": doc_hash,
             "sections": sections,
+            # Ticket 04 (D-037): raw DoclingDocuments for the HybridChunker
+            # adapter — the section collapse above loses the doc structure
+            # (headings / doc_items / tables) the chunker needs. Fresh parses
+            # and cache replays share this exit, so both feed the same
+            # objects. Degraded (pdf_text) documents never carry the key —
+            # the chunker falls back to the original splitter for them.
+            # Popped from chunk metadata in DocumentChunker._inherit_metadata.
+            "docling_documents": documents,
         }
         if images:
             metadata["images"] = images
@@ -306,14 +314,17 @@ class DoclingParser(BaseParser):
 
     def _try_replay(
         self, path: Path, doc_hash: str
-    ) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]]:
+    ) -> Optional[Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Any]]]:
         """Replay a cached parse (D-036); None → run the real docling parse.
 
-        Any unusable cache (miss, stamp mismatch, corrupt/incomplete entry,
-        or a replay that yields no sections) returns None so ``parse`` falls
-        through to a fresh conversion — the cache is advisory and must never
-        break ingestion. Cache hits only ever happen for content that was
-        parsed before under the same stamp, i.e. ``--force`` re-ingests.
+        Returns ``(sections, images, documents)`` — the replayed
+        DoclingDocuments ride along for the hybrid chunker (ticket 04),
+        exactly like the fresh-parse path. Any unusable cache (miss, stamp
+        mismatch, corrupt/incomplete entry, or a replay that yields no
+        sections) returns None so ``parse`` falls through to a fresh
+        conversion — the cache is advisory and must never break ingestion.
+        Cache hits only ever happen for content that was parsed before under
+        the same stamp, i.e. ``--force`` re-ingests.
         """
         if self._parse_cache is None:
             return None
@@ -339,7 +350,7 @@ class DoclingParser(BaseParser):
             f"parse cache hit for {doc_hash[:8]}: replayed {len(documents)} "
             f"batch JSON(s) (DocumentConverter skipped)"
         )
-        return sections, images
+        return sections, images, documents
 
     # ------------------------------------------------------------------
     # Docling extraction
@@ -417,6 +428,10 @@ class DoclingParser(BaseParser):
                 "id": image_id,
                 "path": str(stored_path),
                 "page": page_num,
+                # Ticket 04 (D-037): the hybrid chunker matches chunk picture
+                # items back to rendered images by (page, bbox) to inject
+                # ``[IMAGE: id]`` placeholders — carry the prov bbox along.
+                "bbox": bbox,
                 "text_offset": 0,
                 "text_length": len(f"[IMAGE: {image_id}]"),
                 "position": {

@@ -182,6 +182,13 @@ def test_second_parse_replays_with_zero_converter_calls(settings, fake_pdf, tmp_
     assert doc2.text == doc1.text
     assert doc2.id == doc1.id  # doc_{sha[:16]} — same file hash
 
+    # Ticket 04 (D-037): the replay path must expose the DoclingDocuments
+    # for the hybrid chunker too — same as the fresh-parse exit.
+    assert doc2.metadata.get("docling_documents") is not None
+    assert len(doc2.metadata["docling_documents"]) == len(
+        doc1.metadata["docling_documents"]
+    )
+
 
 def test_cache_entry_layout_on_disk(settings, fake_pdf, tmp_path):
     """First parse writes manifest + batch JSON under {cache_dir}/{sha256}."""

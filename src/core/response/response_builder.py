@@ -283,15 +283,21 @@ class ResponseBuilder:
             if citation.page is not None:
                 lines.append(f"**页码:** {citation.page}")
             
-            # Content snippet — table chunks render as a Markdown table from
-            # metadata.table_html (plain text for embed, HTML for display); other
-            # chunks fall back to the plain-text snippet.
+            # Content snippet — chunks carrying metadata.table_html render a
+            # Markdown table (plain text for embed, structured form for
+            # display, ticket 04). Table-only chunks show the table alone
+            # (their text IS the table); mixed chunks (hybrid splitter:
+            # prose + table in one chunk) get BOTH the text snippet and the
+            # rendered table.
             table_md = self._render_table_snippet(result)
-            if table_md:
-                lines.append(f"\n{table_md}\n")
-            else:
+            show_snippet = not (
+                table_md and self._is_table_only_chunk(result.metadata)
+            )
+            if show_snippet:
                 snippet = self._truncate_text(result.text, self.snippet_max_length)
                 lines.append(f"\n> {snippet}\n")
+            if table_md:
+                lines.append(f"\n{table_md}\n")
         
         # Additional results indicator
         if len(results) > display_count:
@@ -358,21 +364,25 @@ class ResponseBuilder:
         return truncated + "..."
 
     def _render_table_snippet(self, result: RetrievalResult) -> Optional[str]:
-        """Render a table chunk as a GFM Markdown table.
+        """Render the chunk's table as a GFM Markdown table, if it has one.
 
-        Tables carry two representations: ``chunk.text``
-        is cleaned plain text ("列名: 值") used for embedding/BM25, while
-        ``metadata.table_html`` keeps the original row/column structure for
-        display. The format of ``table_html`` depends on the parser:
-        pdfplumber-based ``PdfTableParser`` stores HTML; ``DoclingParser``
-        stores GFM Markdown directly. This renders HTML → GFM, and passes GFM
-        through unchanged, so both parsers render as an actual table.
+        Tables carry two representations: ``chunk.text`` is cleaned plain
+        text used for embedding/BM25, while ``metadata.table_html`` keeps
+        the original row/column structure for display. The format of
+        ``table_html`` depends on the parser: pdfplumber-based
+        ``PdfTableParser`` stores HTML; ``DoclingParser`` (and the hybrid
+        chunker adapter) store GFM Markdown directly. This renders HTML →
+        GFM, and passes GFM through unchanged, so both render as a table.
 
-        Returns None when the result is not a table or has no table_html;
-        the caller then falls back to the plain-text snippet.
+        Ticket 04: the trigger is ``table_html`` presence, NOT
+        ``section_type == "table"`` — hybrid chunks mix prose and table in
+        one chunk and still carry ``table_html``. Old collections are
+        naturally compatible (old table chunks have table_html, old text
+        chunks don't — no migration needed).
+
+        Returns None when the result has no table_html; the caller then
+        falls back to the plain-text snippet only.
         """
-        if result.metadata.get("section_type") != "table":
-            return None
         table_html = result.metadata.get("table_html")
         if not table_html:
             return None
@@ -382,6 +392,22 @@ class ResponseBuilder:
             return self._html_table_to_markdown(table_html)
         # Already GFM/Markdown (docling) → render as-is.
         return stripped
+
+    @staticmethod
+    def _is_table_only_chunk(metadata: Dict[str, Any]) -> bool:
+        """True when the chunk is a table and nothing but a table.
+
+        Table-only chunks show the rendered table alone (their text IS the
+        table — a snippet would duplicate it). Mixed chunks (ticket 04:
+        prose + table in one hybrid chunk) get both. New chunks decide via
+        the contains_* flag group; legacy chunks (pre-flag, K2 collections)
+        fall back to the single-value section_type.
+        """
+        if "contains_table" in metadata:
+            return bool(metadata.get("contains_table")) and not metadata.get(
+                "contains_text"
+            )
+        return metadata.get("section_type") == "table"
 
     @staticmethod
     def _html_table_to_markdown(html: str) -> Optional[str]:

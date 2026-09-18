@@ -462,6 +462,89 @@ class TestResponseBuilder:
         assert "| nomic | 768 |" in response.content
         assert "<table>" not in response.content
 
+    def test_mixed_chunk_renders_snippet_and_table(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """Ticket 04: hybrid chunks mix prose and table — render BOTH.
+
+        The trigger is table_html presence (not section_type); a mixed chunk
+        (contains_table + contains_text) shows the text snippet plus the
+        rendered table instead of the old either/or.
+        """
+        gfm = "| 方案 | 延迟 |\n| --- | --- |\n| A | 12ms |"
+        result = RetrievalResult(
+            chunk_id="doc_mixed_001",
+            score=0.9,
+            text="实验结果表明延迟最低的方案是 A。\n" + gfm,
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "table",  # compatibility single value
+                "contains_text": True,
+                "contains_table": True,
+                "table_html": gfm,
+            },
+        )
+        response = response_builder.build(results=[result], query="延迟")
+
+        # BOTH: prose snippet and rendered table.
+        assert "> 实验结果表明" in response.content
+        assert "| 方案 | 延迟 |" in response.content
+        assert "| A | 12ms |" in response.content
+
+    def test_table_only_chunk_with_flags_skips_snippet(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """Ticket 04: flag-based table-only chunk renders the table alone.
+
+        Its chunk.text IS the table serialization — a snippet would just
+        duplicate the rendered table.
+        """
+        gfm = "| 模型 | 维度 |\n| --- | --- |\n| nomic | 768 |"
+        result = RetrievalResult(
+            chunk_id="doc_table_flags",
+            score=0.9,
+            text=gfm,
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "table",
+                "contains_text": False,
+                "contains_table": True,
+                "table_html": gfm,
+            },
+        )
+        response = response_builder.build(results=[result], query="模型")
+
+        assert "| 模型 | 维度 |" in response.content
+        # No duplicated plain-text snippet for a table-only chunk.
+        assert "> | 模型" not in response.content
+
+    def test_text_chunk_with_table_html_renders_table(
+        self,
+        response_builder: ResponseBuilder,
+    ) -> None:
+        """Ticket 04: table_html presence alone triggers table rendering.
+
+        A chunk can carry a table while its single-value section_type says
+        something else — the display criterion is table_html, not the type.
+        """
+        gfm = "| 指标 | 值 |\n| --- | --- |\n| 命中率 | 0.83 |"
+        result = RetrievalResult(
+            chunk_id="doc_typed_text",
+            score=0.9,
+            text="消融实验的各项指标汇总如下。",
+            metadata={
+                "source_path": "docs/report.pdf",
+                "section_type": "text",  # legacy/compat value, NOT table
+                "table_html": gfm,
+            },
+        )
+        response = response_builder.build(results=[result], query="命中率")
+
+        assert "| 命中率 | 0.83 |" in response.content
+        assert "> 消融实验的各项指标汇总如下" in response.content
+
 
 # =============================================================================
 # Citation Dataclass Tests

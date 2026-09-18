@@ -206,6 +206,34 @@ class ParseCacheSettings:
 # at import time (see parser_factory's lazy resolve_path import).
 PARSER_OCR_MODES = frozenset({"auto", "always", "never"})
 
+# Valid values for ingestion.chunker.provider (ticket 04 / D-037): the
+# docling-path splitter (HybridChunker adapter) vs. the original recursive
+# plain-text splitter (the fallback route, one config line away).
+CHUNKER_PROVIDERS = frozenset({"recursive", "hybrid_docling"})
+
+
+@dataclass(frozen=True)
+class ChunkerSettings:
+    """Ingestion splitting strategy (ticket 04 / D-037).
+
+    ``hybrid_docling`` splits docling-parsed documents with docling's
+    HybridChunker (heading contextualization / repeated table headers /
+    undersized-peer merging / native token budget); ``recursive`` keeps the
+    pre-D-037 splitter behaviour. An absent ``ingestion.chunker`` block means
+    ``recursive`` — old configs keep working unchanged.
+    """
+    provider: str = "recursive"
+    # HybridChunker token budget. Must pair with tokenizer_path: the tokenizer
+    # that counts the tokens decides the budget (D-037: nomic-embed-text,
+    # aligned with the embedding model).
+    max_tokens: int = 1000
+    merge_peers: bool = True
+    # Local tokenizer directory (no HF network access — the network is
+    # blocked on this machine; pulling models goes through ModelScope).
+    # Required when provider is hybrid_docling: without it HybridChunker
+    # would silently fall back to its HF-hosted default tokenizer.
+    tokenizer_path: Optional[str] = None
+
 
 @dataclass(frozen=True)
 class ParserSettings:
@@ -246,6 +274,7 @@ class IngestionSettings:
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
     parser: Optional[ParserSettings] = None  # K1: 可插拔 Parser 配置（缺省默认 pdf）
+    chunker: Optional[ChunkerSettings] = None  # 工单04/D-037: 切分策略（缺省 = recursive 旧路径）
 
 
 @dataclass(frozen=True)
@@ -329,6 +358,40 @@ class Settings:
                     ),
                 )
 
+            # Ticket 04 / D-037: splitting-strategy switch (optional block;
+            # absent = recursive, the pre-D-037 behaviour).
+            chunker_settings = None
+            if "chunker" in ingestion:
+                chunker_cfg = _require_mapping(ingestion, "chunker", "ingestion.chunker")
+                chunker_settings = ChunkerSettings(
+                    provider=_require_choice(
+                        chunker_cfg, "provider", CHUNKER_PROVIDERS, "ingestion.chunker"),
+                    max_tokens=(
+                        _require_int(chunker_cfg, "max_tokens", "ingestion.chunker")
+                        if "max_tokens" in chunker_cfg else 1000
+                    ),
+                    merge_peers=(
+                        _require_bool(chunker_cfg, "merge_peers", "ingestion.chunker")
+                        if "merge_peers" in chunker_cfg else True
+                    ),
+                    tokenizer_path=(
+                        _require_str(chunker_cfg, "tokenizer_path", "ingestion.chunker")
+                        if "tokenizer_path" in chunker_cfg else None
+                    ),
+                )
+                if (
+                    chunker_settings.provider == "hybrid_docling"
+                    and not chunker_settings.tokenizer_path
+                ):
+                    # Fail fast: without a local dir, HybridChunker silently
+                    # falls back to its HF-hosted default tokenizer — exactly
+                    # the network access this config exists to avoid.
+                    raise SettingsError(
+                        "ingestion.chunker.tokenizer_path is required when "
+                        "provider is 'hybrid_docling' (local tokenizer dir, "
+                        "no HF network access)"
+                    )
+
             ingestion_settings = IngestionSettings(
                 chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
                 chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
@@ -337,6 +400,7 @@ class Settings:
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
                 parser=parser_settings,
+                chunker=chunker_settings,
             )
 
         vision_llm_settings = None

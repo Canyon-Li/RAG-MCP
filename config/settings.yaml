@@ -114,6 +114,14 @@ ingestion:
       enabled: true  # 缺省 true；整个 parse_cache 块缺席 = 缓存关闭（pre-D-036 行为，块内不写 enabled 也是开）
       dir: "data/parsed"  # gitignored；条目布局 {dir}/{sha256}/manifest.json + batch_NNN.json
 
+  # Chunker (工单04 / D-037): docling 路径（含重放）切分换 HybridChunker——章节回填(contextualize)/表头重复/小块合并/token 预算原生；
+  # recursive = 切回旧 RecursiveCharacterTextSplitter 路径（后备路线入口，一行切换）。块缺席 = recursive（旧配置零改动）。
+  chunker:
+    provider: "hybrid_docling"
+    max_tokens: 1000  # token 预算；与 tokenizer 配套（nomic-embed-text 口径，同 embedding 模型对齐）
+    merge_peers: true  # 同标题下 undersized 块合并
+    tokenizer_path: "D:/models/nomic-embed-text"  # 本地 tokenizer 目录（ModelScope 拉 nomic-ai/nomic-embed-text-v1 的 tokenizer 文件）；全程不访问 HF 网络
+
   chunk_refiner:
     use_llm: false  # 策略 C:先关 LLM 精炼层(溯源优先确定性),规则去噪层仍恒执行;不满意再开
     # When use_llm is false or LLM call fails, falls back to rule-based refinement

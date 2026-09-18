@@ -32,7 +32,7 @@ from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
 # Ingestion layer imports
-from src.ingestion.chunking.document_chunker import DocumentChunker
+from src.ingestion.chunking.document_chunker import create_document_chunker
 from src.ingestion.transform.chunk_refiner import ChunkRefiner
 from src.ingestion.transform.metadata_enricher import MetadataEnricher
 from src.ingestion.transform.image_captioner import ImageCaptioner
@@ -150,9 +150,16 @@ class IngestionPipeline:
         )
         logger.info(f"  ✓ Parser initialized (provider: {_parser_provider})")
         
-        # Stage 3: Chunker
-        self.chunker = DocumentChunker(settings)
-        logger.info("  ✓ DocumentChunker initialized")
+        # Stage 3: Chunker (ticket 04 / D-037: provider-selected — the
+        # HybridChunker adapter for docling documents, or the original
+        # DocumentChunker for everything else / config switch-back)
+        self.chunker = create_document_chunker(settings)
+        _chunker_provider = (
+            settings.ingestion.chunker.provider
+            if settings.ingestion and settings.ingestion.chunker
+            else "recursive"
+        )
+        logger.info(f"  ✓ DocumentChunker initialized (provider={_chunker_provider})")
         
         # ImageStorage must be ready before ImageCaptioner (stage 4c calls
         # set_caption which is an UPDATE — rows must already exist).
@@ -341,7 +348,10 @@ class IngestionPipeline:
             }
             if trace is not None:
                 trace.record_stage("split", {
-                    "method": "recursive",
+                    # Ticket 04 (D-037): actual splitting method of THIS
+                    # document — hybrid_docling on the adapter path,
+                    # recursive whenever it degraded / was switched back.
+                    "method": getattr(self.chunker, "last_method", "recursive"),
                     "chunk_count": len(chunks),
                     "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0,
                     "chunks": [

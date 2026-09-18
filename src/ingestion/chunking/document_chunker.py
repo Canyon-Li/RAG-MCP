@@ -43,6 +43,25 @@ if TYPE_CHECKING:
     from src.core.settings import Settings
 
 
+def create_document_chunker(settings: "Settings") -> DocumentChunker:
+    """Build the configured chunker (ticket 04 / D-037).
+
+    ``ingestion.chunker.provider`` selects the splitting strategy:
+    ``hybrid_docling`` returns the HybridChunker adapter (docling-parsed
+    documents only — it degrades to this same class for everything else);
+    ``recursive`` or an absent block returns the original DocumentChunker.
+    The lazy import keeps docling out of non-hybrid pipelines entirely.
+    """
+    cfg = getattr(getattr(settings, "ingestion", None), "chunker", None)
+    if cfg is not None and cfg.provider == "hybrid_docling":
+        from src.ingestion.chunking.hybrid_docling_chunker import (
+            HybridDoclingChunker,
+        )
+
+        return HybridDoclingChunker(settings)
+    return DocumentChunker(settings)
+
+
 class DocumentChunker:
     """Converts Documents into Chunks with business-level enrichment.
 
@@ -73,6 +92,11 @@ class DocumentChunker:
         # K2: chunk-size threshold for oversized table/list splitting.
         ingestion = getattr(settings, "ingestion", None)
         self._chunk_size = getattr(ingestion, "chunk_size", None) or 1000
+        # Ticket 04 (D-037): split-stage trace method — the pipeline reads
+        # this after split_document ("recursive" here; the hybrid adapter
+        # flips it to "hybrid_docling" on its path, back to "recursive"
+        # whenever it degrades).
+        self.last_method = "recursive"
 
     def split_document(self, document: Document) -> List[Chunk]:
         """Split a Document into Chunks with full business enrichment.
@@ -451,6 +475,9 @@ class DocumentChunker:
         chunk_metadata.pop("image_captions", None)
         chunk_metadata.pop("image_refs", None)
         chunk_metadata.pop("sections", None)  # parser intermediate
+        # Ticket 04 (D-037): raw DoclingDocuments consumed by the hybrid
+        # chunker path — must never leak into stored chunk metadata.
+        chunk_metadata.pop("docling_documents", None)
         chunk_metadata["chunk_index"] = chunk_index
         chunk_metadata["source_ref"] = document.id
         return chunk_metadata

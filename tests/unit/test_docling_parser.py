@@ -517,3 +517,75 @@ def test_page_batch_size_is_configurable(settings, fake_pdf, tmp_path):
     assert calls["n"] == 2, "batch size 1 over a 2-page doc → 2 converters"
     texts = [s["text"] for s in doc.metadata["sections"]]
     assert texts == ["page 1", "page 2"]
+
+
+# ====================================================================
+# Ticket 04 (D-037): expose the raw DoclingDocuments for HybridChunker
+# ====================================================================
+
+def test_parse_exposes_docling_documents_for_hybrid_chunker(settings, fake_pdf):
+    """The chunker adapter needs the DoclingDocument objects (not just the
+    collapsed sections) — parse() attaches them under metadata so the same
+    object stream feeds fresh parses and cache replays alike."""
+    items = [
+        _make_item("SECTION_HEADER", text="第一章", page=1),
+        _make_item("TEXT", text="正文", page=1),
+    ]
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir="data/images/t", extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    ddocs = doc.metadata.get("docling_documents")
+    assert ddocs, "metadata['docling_documents'] must carry the parsed DoclingDocuments"
+    # Same object(s) the converter produced — identity, not a re-serialization.
+    assert ddocs[0] is converter.convert.return_value.document
+
+
+def test_fallback_document_has_no_docling_documents(settings, fake_pdf):
+    """Degraded (pdf_text) documents have no docling objects — the chunker
+    must fall back to the original splitter for them (ticket 04)."""
+    items: list = []
+    converter = _make_converter(items)
+
+    with patch("src.libs.parser.docling_parser.DocumentConverter", return_value=converter), \
+         patch("src.libs.parser.docling_parser.PYMUPDF_AVAILABLE", False):
+        parser = DoclingParser(
+            settings, collection="t",
+            image_storage_dir="data/images/t", extract_images=False,
+        )
+        doc = parser.parse(fake_pdf)
+
+    assert doc.metadata.get("degraded") is True
+    assert "docling_documents" not in doc.metadata
+
+
+def test_rendered_image_carries_prov_bbox(settings, tmp_path):
+    """Ticket 04: the hybrid chunker matches chunk picture-items to rendered
+    images by (page, bbox) — the rendered image dict must carry the Docling
+    prov bbox (PDF points, bottom-left origin, same shape as section bboxes)."""
+    parser = DoclingParser(
+        settings, collection="t",
+        image_storage_dir=str(tmp_path / "images"), extract_images=True,
+    )
+    pix = MagicMock()
+    pix.width = 1000
+    pix.height = 700
+    page = MagicMock()
+    page.get_pixmap = MagicMock(return_value=pix)
+    page.rect = MagicMock(height=841.9)
+    fitz_doc = MagicMock()
+    fitz_doc.__getitem__.return_value = page
+
+    item = _make_item("PICTURE", page=2, bbox=(50.0, 400.0, 550.0, 50.0))
+
+    with patch("src.libs.parser.docling_parser.fitz.Rect"):
+        img = parser._render_figure_region(fitz_doc, item, "abcd1234ef", 0)
+
+    assert img is not None
+    assert img["bbox"] == {"x0": 50.0, "top": 400.0, "x1": 550.0, "bottom": 50.0}
