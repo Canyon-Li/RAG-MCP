@@ -21,12 +21,12 @@ class CrossEncoderRerankError(RuntimeError):
 
 class CrossEncoderReranker(BaseReranker):
     """Cross-Encoder based reranker for scoring query-passage pairs.
-    
+
     This implementation uses Cross-Encoder models (e.g., ms-marco-MiniLM)
     that directly encode and score (query, passage) pairs, providing more
     accurate relevance scores than bi-encoder approaches at the cost of
     higher computational requirements.
-    
+
     Design Principles Applied:
     - Pluggable: Can be swapped with other reranker implementations via factory.
     - Config-Driven: Model name and parameters come from settings.yaml.
@@ -34,6 +34,13 @@ class CrossEncoderReranker(BaseReranker):
     - Fallback-Aware: Provides timeout/failure signals for upstream fallback.
     - Deterministic Testing: Supports mock scorer injection for testing.
     """
+
+    # Ticket 06 / D-033 追记: rerank window 512 → 1024. sentence-transformers
+    # defaults to the model tokenizer's max_seq_length (512), which silently
+    # truncated every rerank input to its first half once table chunks grew to
+    # a 1000-token budget (D-037). 1024 fits query + a full-budget chunk minus
+    # a few trailing row tokens (accepted, per D-033 追记 2026-09-18).
+    MAX_LENGTH = 1024
     
     def __init__(
         self,
@@ -114,8 +121,11 @@ class CrossEncoderReranker(BaseReranker):
         
         try:
             logger.info(f"Loading Cross-Encoder model: {model_name}")
-            model = CrossEncoder(model_name)
-            logger.info(f"Cross-Encoder model loaded successfully: {model_name}")
+            model = CrossEncoder(model_name, max_length=self.MAX_LENGTH)
+            logger.info(
+                f"Cross-Encoder model loaded successfully: {model_name} "
+                f"(max_length={self.MAX_LENGTH})"
+            )
             return model
         except Exception as e:
             raise RuntimeError(

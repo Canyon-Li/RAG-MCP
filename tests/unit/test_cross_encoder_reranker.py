@@ -68,7 +68,7 @@ def sample_candidates():
 
 class TestCrossEncoderRerankerInit:
     """Test CrossEncoderReranker initialization."""
-    
+
     def test_init_with_mock_model(self, mock_settings):
         """Test initialization with injected mock model."""
         mock_model = MockCrossEncoder()
@@ -77,11 +77,22 @@ class TestCrossEncoderRerankerInit:
             model=mock_model,
             timeout=5.0
         )
-        
+
         assert reranker.settings == mock_settings
         assert reranker.model == mock_model
         assert reranker.timeout == 5.0
-    
+
+    def test_model_loaded_with_max_length_1024(self, mock_settings):
+        """Ticket 06 (D-033 追记): CrossEncoder must be constructed with an
+        explicit max_length=1024 — the sentence-transformers default silently
+        truncates to 512, hiding the back half of 1000-token table chunks."""
+        with patch("sentence_transformers.CrossEncoder") as mock_ce:
+            CrossEncoderReranker(settings=mock_settings)
+
+        mock_ce.assert_called_once_with(
+            "cross-encoder/ms-marco-MiniLM-L-6-v2", max_length=1024
+        )
+
     def test_init_missing_model_config(self):
         """Test initialization fails when model config is missing."""
         settings = Mock(spec=Settings)

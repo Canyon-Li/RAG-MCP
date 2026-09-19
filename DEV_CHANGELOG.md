@@ -92,6 +92,7 @@
 - **关联**：[CLAUDE.md](CLAUDE.md)（MCP stdio 节已更新至此模式）；[[D-004]]（preload 纪律的边界外推）；[[D-005]]（warm 失败走 graceful degradation，首查降级 RRF 顺序）；判官面 A/B 结论见 T15 Resolution（precision +10.9pt 显著 / recall 噪声内——印证 [[T05]] precision 唯一排序敏感）。
 - **追记（2026-09-17，512 截断留观）**：设计对齐会发现 [cross_encoder_reranker.py](src/libs/reranker/cross_encoder_reranker.py) 构造 `CrossEncoder(model_name)` 未传 `max_length`，sentence-transformers 默认按 **512 token 截断**重排输入，而模型本体支持 8192（bge-reranker-v2-m3 = BGE-M3 底座 + 打分头，`max_position_embeddings: 8194`）——即 T15 的 +10.9pt 是**带着截断**测得的，截断的真实代价未单独归因。决策：留观不动。max_length 是查询侧一行改动、无需重灌、随时可翻，推迟成本近零；若表格/长块检索质量暴露问题再调 1024–2048（不取 8192：CPU torch 下注意力平方级，长序列重排延迟不可接受）。
 - **追记（2026-09-18，留观解除→定 1024）**：表格块预算 token 化（总 1000 token）后，512 窗口只能看见前缀一半，留观前提失效。决策：`max_length=1024`（查询+块基本整装；满预算块+长查询会溢出几十 token，截的是行片尾部，接受）。注意 CPU torch 下 512→1024 单对计算约 4×，实现时须实测首查延迟，不可接受则回 768。
+- **追记（2026-09-19，1024 落地+实测）**：工单 06 落地 `CrossEncoder(model, max_length=1024)`（类常量 `MAX_LENGTH`）。CPU 首查延迟实测（spike 03，bge-reranker-v2-m3，满预算块 ~4.4k 字符的**上界**口径，真实混合池更低；torch 2.13.0+cpu，6 线程）：单对稳态 512 窗 0.97s / 1024 窗 1.92s（**实测 2×，非理论 4×**——512 窗下长文本本就截半，1024 只是补全另一半）；25 对池（MCP 路径）1024 窗首查 48.2s、稳态 48.0s；50 对池（eval 口径）95.7s。**判定：保留 1024 不回退**——延迟量级是 CPU torch 的存量问题（512 窗基线首查也有 25s），回 768 只省 ~25% 不改量级；eval 侧离线跑不敏感；MCP 侧真要交互化，解法是装 CUDA torch（机器有 4060 Ti 但 conda torch 是 CPU 版，重排/公式识别同为受害者，另立工单），不是砍窗口。注：sentence-transformers 6.x 构造参数仍叫 `max_length`，但实例属性已改名 `max_seq_length`（DeprecationWarning），构造面不受影响。
 
 ---
 
