@@ -1,8 +1,11 @@
 """DeepSeek LLM implementation (OpenAI-compatible).
 
 DeepSeek exposes an OpenAI-compatible Chat Completions endpoint. This module
-subclasses :class:`OpenAILLM` and only overrides the default base URL, API-key
-resolution, and error type, so all chat/HTTP logic is inherited unchanged.
+subclasses :class:`OpenAILLM` and overrides the default base URL, API-key
+resolution, the error type, and :meth:`chat` — which injects
+``extra_body={"thinking": {"type": "disabled"}}`` by default (deepseek-flash
+ships with reasoning ON; tight completion budgets came back empty before
+this, 2026-09-19). All other chat/HTTP logic is inherited unchanged.
 
 Configuration (settings.yaml)::
 
@@ -72,6 +75,13 @@ class DeepSeekLLM(OpenAILLM):
     ) -> ChatResponse:
         """Generate a chat completion via the inherited OpenAI-compatible flow.
 
+        Thinking mode is disabled by default: deepseek-flash ships with
+        reasoning ON, which silently starves tight completion budgets (the
+        table summarizer's 120-token cap came back empty 8/8 on 2026-09-19)
+        and burns generation quota elsewhere. Callers that want reasoning
+        pass ``extra_body={"thinking": {"type": "enabled"}}`` explicitly.
+        Other ``extra_body`` keys merge alongside the default.
+
         Args:
             messages: List of conversation messages.
             trace: Optional TraceContext for observability (reserved for Stage F).
@@ -84,6 +94,9 @@ class DeepSeekLLM(OpenAILLM):
             ValueError: If messages are invalid.
             DeepSeekLLMError: If the API call fails.
         """
+        extra = dict(kwargs.get("extra_body") or {})
+        extra.setdefault("thinking", {"type": "disabled"})
+        kwargs["extra_body"] = extra
         try:
             return super().chat(messages, trace=trace, **kwargs)
         except OpenAILLMError as e:

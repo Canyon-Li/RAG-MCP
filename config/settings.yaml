@@ -11,10 +11,10 @@ llm:
   deployment_name: ""
   azure_endpoint: ""
   api_version: ""
-  api_key: ""  # 留空走 DEEPSEEK_API_KEY 环境变量（.env，evaluate.py 会 load_dotenv）
+  api_key: ""  # 留空走 DEEPSEEK_API_KEY 环境变量（.env；evaluate.py 与 ingest.py 均已 load_dotenv）
   base_url: "https://api.deepseek.com"
   temperature: 0.0
-  max_tokens: 8192  # 思考默认开（OpenAILLM 不透传 extra_body 关不掉）——推理 token 吃生成额度，必须放大
+  max_tokens: 8192  # 生成端上限；deepseek-flash 思考已全链路显式关（DeepSeekLLM 默认注入 thinking disabled，2026-09-19）——此值沿用 T22 opt3 口径保 run 同构
 
 # =============================================================================
 # Embedding Configuration

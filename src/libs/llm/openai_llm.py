@@ -125,10 +125,14 @@ class OpenAILLM(BaseLLM):
         temperature = kwargs.get("temperature", self.default_temperature)
         max_tokens = kwargs.get("max_tokens", self.default_max_tokens)
         model = kwargs.get("model", self.model)
-        
+        # Provider-specific body extensions (e.g. deepseek's thinking-mode
+        # switch). Never injected here — OpenAI-compatible endpoints reject
+        # unknown params, so this stays an explicit caller choice.
+        extra_body = kwargs.get("extra_body")
+
         # Convert messages to API format
         api_messages = [{"role": m.role, "content": m.content} for m in messages]
-        
+
         # Make API call
         try:
             response_data = self._call_api(
@@ -136,6 +140,7 @@ class OpenAILLM(BaseLLM):
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                extra_body=extra_body,
             )
             
             # Parse response
@@ -165,6 +170,7 @@ class OpenAILLM(BaseLLM):
         model: str,
         temperature: float,
         max_tokens: int,
+        extra_body: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Make the actual API call to OpenAI.
         
@@ -175,7 +181,9 @@ class OpenAILLM(BaseLLM):
             model: Model identifier.
             temperature: Generation temperature.
             max_tokens: Maximum tokens to generate.
-        
+            extra_body: Optional provider-specific payload keys merged into
+                the request body (e.g. deepseek's ``thinking`` switch).
+
         Returns:
             Raw API response as dictionary.
         
@@ -204,6 +212,8 @@ class OpenAILLM(BaseLLM):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
+        if extra_body:
+            payload.update(extra_body)
         
         try:
             with httpx.Client(timeout=60.0) as client:
