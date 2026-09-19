@@ -55,6 +55,7 @@
 | D-038 | 2026-09-18 | OCR 探测路由：docling 默认全量 OCR 改为按文件探测文本层（auto/always/never 三态），数字 PDF 关 OCR 提速、扫描件不静默空索引 | 已实现 | 本文件 B 节 |
 | D-039 | 2026-09-19 | 公式富化弃 docling 内置 VLM 路线改自研补全：layout 免费框出的空 FORMULA 条目 bbox 渲图→复用 vision_llm（qwen2.5vl-3b GPU）转 LaTeX；实测内置路线本机不可行（模型不可得/165s 每页） | 已实现 | 本文件 B 节 |
 | D-040 | 2026-09-19 | ollama embedding 换 /api/embed 截断端点（legacy /api/embeddings 超模型 ctx 裸 500）：HybridChunker 大块 + caption 缝入 8.7k 字符超 nomic 2048 token 上限首次引爆；cosine 空间下两端点向量等价 | 已实现 | 本文件 C 节 |
+| D-041 | 2026-09-14 | LLM 判官工程参数三课：调用量换代→节流重校（批间 30s）、拆解膨胀→max_tokens 16384、思考默认开→显式关（原编号 D-036 撞号勘误，2026-09-19 重编） | 采纳 | 本文件尾部 |
 
 ---
 
@@ -387,7 +388,11 @@
 
 > 写作纪律：① 没有证据（commit / 文件 / 实测）的决策不要写；② "改了什么"交给 git，这里只写"为什么"；③ 弃用的方案和踩过的坑同样重要，写下来避免重蹈。
 
-### D-036 LLM 判官工程参数三课：调用量换代→节流重校、拆解膨胀→max_tokens 16384、思考默认开→显式关
+### D-041 LLM 判官工程参数三课：调用量换代→节流重校、拆解膨胀→max_tokens 16384、思考默认开→显式关
+
+> 编号勘误(2026-09-19):本条原编号 D-036,与 B 节「解析产物落盘为唯一真源」撞号(后者先占
+> 且已被代码/测试/CLAUDE.md 引用 40+ 处,不可改)。本条重编为 D-041;此前 gitignored 工单与
+> 评测记录中的「D-036 判官三课」字样均指本条。
 - **碰到**：[T20](../.wayfinder/tickets/T20-generation-and-4metrics.md) 切 4 参数后连环四个现象。① run1 全量 13/23 题 IncompleteOutput 之外 **APITimeoutError 全题清零**——4 参数每题判官调用 ~7 次（v4.0 约 3 次），原节流参数（批间 15s、客户端默认超时）随调用量上升失效；② faithfulness 3 题（数字最密）IncompleteOutputException——判官把答案拆成 statements 的**拆解输出**撞 `max_tokens=8192`；生成端 prompt 手术把答案压 60% 只回收 2 题，且 841✓/968✗/1080✓/1165✗ 证明溢出与答案长度**无单调关系**，病灶在判官对数字密集内容的拆解膨胀；③ [T21](../.wayfinder/tickets/T21-testset-v50-synthesis.md) 合成的 NER 步骤同样撞 8192 直接崩整跑（无部分保存，~350 调用全重付）；④ 线上抓包发现 **deepseek-flash 思考输出默认开**（reasoning_tokens 计费且拖慢，判官/合成器的隐性成本）。
 - **行业做法**：LLM-as-judge 不稳定公认，四类缓解见 [判官稳定性调研](../.wayfinder/research/llm-judge-stability-industry.md)（exact-match 缓存/温度→0/多采样/粗粒度判决）；「判官调用量随指标组合换代→节流与输出上限需整体重校」没有现成指引，本条为实测结论。思考模式关闭依赖供应商 API 的显式 opt-out，无文档提示默认态——靠 usage 抓包发现。
 - **我的解法**：三层防失效 + 两个参数定版——① 单指标隔离（`_run_ragas` 单指标异常只排除该指标，不作废整 run）；② deepseek 客户端显式 connect=15s / read=300s / max_retries=4 + 批间 15s→30s；③ 判官与合成器 `max_tokens` 8192→16384（T21 合成器实证可用）；④ 思考模式显式关（extra_body 透传）；⑤ 合成侧步间保存 + DiskCache 断点可续。定版判官参数（[T22](../.wayfinder/tickets/T22-new-baseline-and-noise-floor.md) 冻结）：deepseek-flash / 16384 / 思考关 / 批间 30s / 温度 0.01（ragas 0.4.3 隐式）。run2 起 0 超时、0 溢出。

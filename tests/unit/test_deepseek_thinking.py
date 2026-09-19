@@ -4,7 +4,7 @@ deepseek-flash ships with thinking ON. Ingestion-time callers with tight
 completion caps (table summarizer: max_tokens=120) had their entire budget
 consumed by reasoning tokens — the API returned an empty ``content``, every
 summary silently degraded to None (8/8 failures on the first re-ingest run).
-Decision (D-036 追记, DEV_CHANGELOG): turn thinking OFF for **all**
+Decision (D-041 追记, DEV_CHANGELOG): turn thinking OFF for **all**
 deepseek-flash calls made through :class:`DeepSeekLLM` — generation, table
 summaries, everything. The judge builds its own client (ragas_evaluator) and
 already disables thinking.
