@@ -1,0 +1,8 @@
+The image is a mathematical formula cropped from a scientific paper. Transcribe it as LaTeX source code.
+
+Rules:
+- Output ONLY the LaTeX for the formula itself. No explanations, no surrounding prose, no $ or $$ delimiters, no markdown code fences.
+- Ignore text that appears before or after the formula region (surrounding sentences, page furniture).
+- If the formula carries an equation number like (1), keep it at the very end as \tag{1}.
+- Keep the structure: matrices use bmatrix/pmatrix/array environments; multi-line constructs use aligned/array.
+- Keep subscripts and superscripts with _ and ^, and symbols like \oplus, \otimes, \colon as-is.

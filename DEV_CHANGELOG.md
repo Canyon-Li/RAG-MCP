@@ -53,6 +53,7 @@
 | D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 已实现（09-18 追记） | 本文件 B 节 |
 | D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 已拍板待实现 | 本文件 B 节 |
 | D-038 | 2026-09-18 | OCR 探测路由：docling 默认全量 OCR 改为按文件探测文本层（auto/always/never 三态），数字 PDF 关 OCR 提速、扫描件不静默空索引 | 已实现 | 本文件 B 节 |
+| D-039 | 2026-09-19 | 公式富化弃 docling 内置 VLM 路线改自研补全：layout 免费框出的空 FORMULA 条目 bbox 渲图→复用 vision_llm（qwen2.5vl-3b GPU）转 LaTeX；实测内置路线本机不可行（模型不可得/165s 每页） | 已实现 | 本文件 B 节 |
 
 ---
 
@@ -214,6 +215,15 @@
 - **为什么不用别的**：① 探测判据**只用文本量，不用「整页大图」联判**（与工单原文措辞有偏差）：无文本但无大图的页（矢量绘制字形）同样必须 OCR，且误报代价不对称——多开 OCR 只费时间，漏开 OCR 静默空索引；整页大图只进日志作旁证。② 探测失败保守方向=开（docling 旧行为），不是关。③ 不做页级 OCR 混合（一份扫描封面+数字正文的文件整体走一边）——粒度按工单定在文件级，混合件靠图形提取兜底封面。
 - **代价 / 现状**：数字 PDF 解析提速（省 RapidOCR 逐页跑）；auto 下纯扫描件行为不变（本来 do_ocr=True）；`ocr_mode` 进版本戳使旧 D-036 缓存条目一次性失效（同分支未发布，无实际代价）。测试：单测 13 项（三态路由/真 fitz 夹具分流/探测失败降级可查日志/converter 真收到 do_ocr/戳随策略变化）+ 真 docling 集成 3 项（扫描夹具 OCR 真读回文本、数字件关 OCR、强制开兜底），全绿。
 - **关联**：[工单 03](../.scratch/ingestion-revamp/issues/03-ocr-probe-routing.md)；[docling_parser.py](src/libs/parser/docling_parser.py)（`_decide_ocr`/`_probe_needs_ocr`/`_build_converter`）；[[D-036]]（版本戳成分表——转换 options 属第一类必须进戳）；[[D-035]]（同一 `_build_converter` 挂点的前例：每批新 converter）。
+
+### D-039 公式富化：弃 docling 内置 VLM 路线，自研解析后补全（qwen2.5vl 复用）
+
+- **碰到**：工单 06（摄入端改造）。工单原文「解析端开公式富化（FORMULA→LaTeX），spike 已证无需自研」——实现时发现前提有两处与现实不符：① spike 01 从未开过富化，其 JSON 里 formula 条目是**空文本**（layout 免费框出盒子但没有内容），「富化后原地换 LaTeX」是推断；② docling 2.123 的 `do_formula_enrichment` 走 **VLM 推理**（非轻量 MFD/MFR 识别器）：默认 preset 的 CodeFormulaV2 模型 HF 被断且 ModelScope 无镜像，本机不可得；唯一可拉路线 granite-docling-258M（ModelScope 拉，artifacts_path 布局绕开 HF）实测 **165s/页**（torch 是 CPU 版，收紧 max_new_tokens/关代码抽取均无效）且质量存疑（正文当公式转述、矩阵列声明错乱、`</formula` 残留）。
+- **行业做法**：公式识别（formula recognition / MFR）主流是专用 OCR 式模型（Texify、Pix2Text、Nougat）或 VLM 看图转写；区域检测（MFD）与转写（MFR）分离是标准架构——docling layout 本身就完成 MFD，缺的只是转写。
+- **我的解法**：自研「解析后公式补全」阶段（[formula_transcriber.py](src/libs/parser/formula_transcriber.py)）：fresh 解析后、解析缓存落盘**前**，遍历 `DoclingDocument` 里空文本的 FORMULA 条目 → bbox 渲图（fitz，200 DPI，外扩 18% 对齐 docling 自家 expansion_factor）→ 复用 `create_vision_llm` 链路调 ollama **qwen2.5vl-3b（GPU，≈3.6s/条、7.1s/页**，spike 04 实测，质量优于 granite：8×8 双矩阵完整输出）→ LaTeX 清洗（剥 `$$`/`\[\]`/围栏）填回 `item.text`。LaTeX 随无损 JSON 冻结进 D-036 缓存，`--force` 重放**零成本复用**（重放路径不调转写器）；行内/行间的分块归属由 HybridChunker 原生处理（工单 04 已备 `contains_formula` flag）。开关 `ingestion.parser.formula_enrichment`（缺省关）与 vision_llm 块 AND 门控、进解析版本戳（**有效状态**入戳——富化开但 vision 关必须戳成关，否则空公式以富化开名义冻结进缓存，事后开 vision 重放到旧空 JSON）；失败降级退空条目不阻塞摄入（D-005），prompt 落 `config/prompts/formula_transcription.txt`。`_LABEL_MAP` 补 `FORMULA→text`（富化后条目按文本段进 sections/Document.text，空条目仍被 text.strip() 门槛丢弃=旧行为）。
+- **为什么不用别的**：① docling 内置路线（上文，不可得/不可接受）；② docling `ApiVlmEngine` 指向 ollama——引擎面支持，但其 code_formula 阶段 prompt 写死 granite 训练标记 `<formula>`（qwen 看不懂），得 patch docling 内部方法，升级易碎；③ 装 CUDA torch 跑内置 granite——为一条需求动 conda 环境（2.5-3.5GB 下载），且 granite-258M 质量弱于 qwen2.5vl-3b。顺带记录：工单 06 同分支的重排 1024 实测见 [[D-033 追记]]——同受 CPU torch 之害，装 CUDA torch 是两者共同正解，另立工单。
+- **代价 / 现状**：公式补全在解析路径内联（首解析 +7s/页量级，含公式密度而变）；无跨文件持久缓存——同一文件仅当解析缓存失效（版本戳变/docling 升级）才重付转写成本，接受。已知瑕疵：qwen 偶发输出边缘噪声（多余 `}`、公式后缀一句正文），prompt 已加规则抑制，残余噪声只影响该条 LaTeX 可读性、不破坏链路。测试：单测 19（转写器 14：清洗参数化/降级/幂等/双层 prov 防御 + 接线 5：save 前补全/重放跳转写/崩溃不破解析/缺省不构造/版本戳有效门）+ 真 ollama 集成 3（块文本含 LaTeX、contains_formula 块全带 LaTeX、Document.text 可见）全绿。附：docling-core 程序化 API 的 `add_text/add_formula` 必须传**裸** ProvenanceItem，传 list 产生双层 prov 且 `load_from_json` 拒收——测试构造踩坑记录，转写器已加同形防御。
+- **关联**：工单 06；[formula_transcriber.py](src/libs/parser/formula_transcriber.py)；[[D-036]]（缓存冻结/重放复用）；[[D-037]]（HybridChunker/contains_formula）；[[D-020]]（vision_llm 块）；[[D-014]]（ollama trust_env=False）；[[D-005]]（降级规则）；spike 02/04 脚本与实测数据在 `.scratch/ingestion-revamp/spikes/`。
 
 ---
 

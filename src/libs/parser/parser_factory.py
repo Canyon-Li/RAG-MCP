@@ -132,6 +132,11 @@ class ParserFactory:
             ocr_mode = getattr(parser_cfg, "ocr_mode", None)
             if isinstance(ocr_mode, str):
                 extra_kwargs["ocr_mode"] = ocr_mode
+            # Ticket 06 / D-039: formula enrichment switch (forwarded only
+            # when explicitly a bool — same mock-tolerance guard as above).
+            formula_enrichment = getattr(parser_cfg, "formula_enrichment", None)
+            if isinstance(formula_enrichment, bool):
+                extra_kwargs["formula_enrichment"] = formula_enrichment
             # D-036: forward the parse-cache root only when the cache is
             # configured AND enabled — absence of the kwarg keeps providers
             # cache-free (pre-D-036 behaviour). isinstance guard for the

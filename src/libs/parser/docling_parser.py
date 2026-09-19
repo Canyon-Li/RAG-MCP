@@ -78,6 +78,10 @@ _LABEL_MAP: Dict[str, str] = {
     "TABLE": "table",
     "PICTURE": "figure",
     "FIGURE": "figure",
+    # Ticket 06 / D-039: enriched formula items carry LaTeX in text → they
+    # flow as text sections; empty ones stay dropped by the text.strip() gate
+    # (pre-enrichment behaviour unchanged).
+    "FORMULA": "text",
     "CAPTION": "figure_caption",
     "FOOTNOTE": "text",
     "LIST_ITEM": "text",
@@ -153,6 +157,7 @@ class DoclingParser(BaseParser):
         ocr_mode: str = "auto",
         page_batch_size: int | None = None,
         parse_cache_dir: str | Path | None = None,
+        formula_enrichment: bool = False,
         **kwargs: Any,
     ):
         """Initialize DoclingParser.
@@ -171,6 +176,9 @@ class DoclingParser(BaseParser):
             parse_cache_dir: Root dir for the D-036 parse cache
                 (Factory-resolved when ``ingestion.parser.parse_cache.enabled``
                 is true). None keeps the cache off — pre-D-036 behaviour.
+            formula_enrichment: Transcribe empty FORMULA items to LaTeX via
+                the Vision LLM (ticket 06 / D-039). AND-gated with the
+                ``vision_llm`` block; failures degrade to empty items (D-005).
 
         Raises:
             ImportError: If docling is not installed.
@@ -191,6 +199,11 @@ class DoclingParser(BaseParser):
                 f"ocr_mode must be one of {sorted(self.VALID_OCR_MODES)}, "
                 f"got {ocr_mode!r}"
             )
+        # Ticket 06 / D-039: formula enrichment switch. The transcriber is
+        # built lazily on first fresh parse (see _transcribe_formulas) —
+        # constructing a parser must stay free of Vision-LLM client setup.
+        self.formula_enrichment = bool(formula_enrichment)
+        self._formula_transcriber: Any = None
         self.page_batch_size = (
             page_batch_size
             if page_batch_size is not None
@@ -240,6 +253,11 @@ class DoclingParser(BaseParser):
                 do_ocr = self._decide_ocr(path)
                 self.last_ocr_do_ocr = do_ocr
                 documents, complete = self._convert_batches(path, do_ocr)
+                # BEFORE _walk_documents (enriched LaTeX must reach sections)
+                # and before the cache save (LaTeX freezes into the replay
+                # JSON — replay never re-transcribes, D-036). Replay path
+                # above never gets here.
+                self._transcribe_formulas(path, documents)
                 sections, images = self._walk_documents(path, doc_hash, documents)
             except Exception as e:
                 logger.warning(
@@ -282,6 +300,26 @@ class DoclingParser(BaseParser):
             metadata["title"] = title
         return Document(id=doc_id, text=full_text, metadata=metadata)
 
+    def _transcribe_formulas(self, path: Path, documents: List[Any]) -> None:
+        """Enrich empty FORMULA items to LaTeX (ticket 06 / D-039), best-effort.
+
+        Lazy construction (first fresh parse): building the transcriber wires
+        a Vision-LLM client, which parser construction must not pay when the
+        switch is off or the parse replays from cache. The transcriber itself
+        degrades per item; this wrapper additionally guards against
+        construction failures so enrichment can never break a parse (D-005).
+        """
+        if not self.formula_enrichment:
+            return
+        try:
+            if self._formula_transcriber is None:
+                from src.libs.parser.formula_transcriber import FormulaTranscriber
+
+                self._formula_transcriber = FormulaTranscriber(self.settings)
+            self._formula_transcriber.transcribe(path, documents)
+        except Exception as e:
+            logger.warning(f"formula enrichment skipped for {path}: {e}")
+
     def _version_stamp(self) -> str:
         """Stamp of the parse mapping that writes/reads the cache (D-036).
 
@@ -307,10 +345,26 @@ class DoclingParser(BaseParser):
             # D-036 first-class stamp members (same rule as ocr_mode).
             "ocr_probe_pages": self.OCR_PROBE_PAGES,
             "ocr_text_min_chars": self.OCR_TEXT_MIN_CHARS,
+            # Ticket 06 / D-039: enrichment changes the saved JSON content
+            # (FORMULA texts gain LaTeX) — flipping the switch must
+            # invalidate old cache entries. EFFECTIVE state, not the raw
+            # switch: the transcriber is AND-gated with vision_llm.enabled
+            # (FormulaTranscriber), so formula_enrichment=true +
+            # vision_llm off must stamp as "no enrichment" — otherwise empty
+            # formulas freeze into the cache under an enrichment-on stamp and
+            # replay stale after vision_llm is enabled.
+            "formula_enrichment": self.formula_enrichment
+            and self._vision_gate_on(),
             "docling_version": _docling_package_version(),
         }
         blob = json.dumps(payload, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def _vision_gate_on(self) -> bool:
+        """True when the vision_llm block is enabled (mirrors the
+        FormulaTranscriber AND-gate; getattr-tolerant for mocked settings)."""
+        vision_cfg = getattr(self.settings, "vision_llm", None)
+        return bool(getattr(vision_cfg, "enabled", False))
 
     def _try_replay(
         self, path: Path, doc_hash: str

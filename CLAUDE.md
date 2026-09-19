@@ -122,7 +122,7 @@ Image extraction method is **parser-specific** (capability boundary — see DEV_
 - **Windows console + Chinese output.** CLI scripts set `sys.stdout/stderr` to UTF-8 wrappers on `win32`; match this if adding scripts that print non-ASCII.
 - **Tests insert repo root onto `sys.path`** (`conftest.py` and each script), so `from src.…` imports work without installing the package. Integration/e2e tests shell out to `python -m src.mcp_server.server` as a subprocess.
 - **Adding a new document format:** subclass `BaseParser` + `ParserFactory.register_provider()`; the rest of the pipeline is format-agnostic. Details & registered parsers in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
-- **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`, `table_summary.txt`) — edit there, not in code.
+- **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`, `table_summary.txt`, `formula_transcription.txt`) — edit there, not in code.
 - **Design decisions & pitfalls live in [DEV_CHANGELOG.md](DEV_CHANGELOG.md)** — check it before changing providers / parsers / runtime env to avoid repeating past traps (e.g. local-service httpx needs `trust_env=False`; use conda, not `.venv`; completion models can't be wrapped in a chat template).
 
 ## Skills (agent-driven workflow)

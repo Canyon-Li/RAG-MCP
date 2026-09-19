@@ -276,6 +276,10 @@ class ParserSettings:
     # ``never``   — force OCR off. The literal set is duplicated (validated)
     # in DoclingParser — libs must not import core at module import time.
     ocr_mode: str = "auto"
+    # Ticket 06 / D-039: transcribe empty FORMULA items to LaTeX via the
+    # Vision LLM after a fresh docling parse. AND-gated with the
+    # ``vision_llm`` block; an absent key means off (pre-ticket behaviour).
+    formula_enrichment: bool = False
     # Optional override of the parser's conversion batching. ``0`` means a
     # single unrestricted convert — the T23 corpus-integrity fix: docling's
     # batched conversion (fresh converter per batch) loses sections
@@ -368,6 +372,12 @@ class Settings:
                             parser_cfg, "ocr_mode", PARSER_OCR_MODES,
                             "ingestion.parser")
                         if "ocr_mode" in parser_cfg else "auto"
+                    ),
+                    formula_enrichment=(
+                        _require_bool(
+                            parser_cfg, "formula_enrichment",
+                            "ingestion.parser")
+                        if "formula_enrichment" in parser_cfg else False
                     ),
                     parse_cache=parse_cache_settings,
                 )
