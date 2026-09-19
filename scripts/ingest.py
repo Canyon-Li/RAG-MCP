@@ -187,6 +187,15 @@ def main() -> int:
     Returns:
         Exit code (0=success, 1=partial failure, 2=complete failure)
     """
+    # Load .env (gitignored) BEFORE anything builds an LLM client — the
+    # table-summarizer (and any other ingestion-time cloud LLM) reads
+    # DEEPSEEK_API_KEY from there. Same pattern as scripts/evaluate.py;
+    # without it the summarizer silently degrades to no-summary chunks
+    # (D-005 fallback) on every CLI ingest.
+    from dotenv import load_dotenv
+
+    load_dotenv()
+
     args = parse_args()
     
     # Setup logging level
