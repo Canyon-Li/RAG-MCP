@@ -33,9 +33,9 @@ def mock_settings_ollama() -> Any:
 
 @pytest.fixture
 def mock_ollama_response() -> dict[str, Any]:
-    """Create a mock Ollama embeddings response."""
+    """Create a mock Ollama embeddings response (/api/embed shape)."""
     return {
-        "embedding": [0.1, 0.2, 0.3, 0.4, 0.5]  # Truncated for testing
+        "embeddings": [[0.1, 0.2, 0.3, 0.4, 0.5]]  # Truncated for testing
     }
 
 
@@ -110,14 +110,48 @@ class TestOllamaEmbedding:
         
         # Assert
         assert len(result) == 1
-        assert result[0] == mock_ollama_response["embedding"]
-        
+        assert result[0] == mock_ollama_response["embeddings"][0]
+
         # Verify API call
         mock_client_class.return_value.__enter__.return_value.post.assert_called_once()
         call_args = mock_client_class.return_value.__enter__.return_value.post.call_args
-        assert call_args[0][0] == f"{embedding.base_url}/api/embeddings"
+        # /api/embed (not the legacy /api/embeddings): the legacy endpoint
+        # rejects prompts longer than the model's context with a bare 500,
+        # while /api/embed truncates to num_ctx. First hit on 2026-09-19:
+        # a HybridChunker table chunk + two VLM captions (8.7k chars ≈ 2.2k
+        # tokens) exceeded nomic's 2048-token ceiling and silently dropped
+        # its whole encode batch.
+        assert call_args[0][0] == f"{embedding.base_url}/api/embed"
         assert call_args[1]["json"]["model"] == "nomic-embed-text"
-        assert call_args[1]["json"]["prompt"] == "hello world"
+        assert call_args[1]["json"]["input"] == "hello world"
+
+    @patch('httpx.Client')
+    def test_embed_oversized_text_reaches_truncating_endpoint(
+        self,
+        mock_client_class: Mock,
+        mock_settings_ollama: Any,
+        mock_ollama_response: dict[str, Any],
+    ) -> None:
+        """Texts longer than the model context must not fail client-side.
+
+        Truncation is the server's job (/api/embed truncate defaults to
+        true); the client's contract is to forward the full text — the
+        caller decides chunking, not the embedding layer.
+        """
+        mock_response = Mock()
+        mock_response.json.return_value = mock_ollama_response
+        mock_response.raise_for_status.return_value = None
+        mock_client_class.return_value.__enter__.return_value.post.return_value = mock_response
+
+        oversized = "quantum " * 2000  # ~14k chars > nomic 2048-token ctx
+
+        embedding = OllamaEmbedding(mock_settings_ollama)
+        result = embedding.embed([oversized])
+
+        assert len(result) == 1
+        call_args = mock_client_class.return_value.__enter__.return_value.post.call_args
+        assert call_args[0][0] == f"{embedding.base_url}/api/embed"
+        assert call_args[1]["json"]["input"] == oversized
     
     @patch('httpx.Client')
     def test_embed_multiple_texts(
@@ -129,11 +163,11 @@ class TestOllamaEmbedding:
         # Setup mock HTTP client with different embeddings for each text
         def create_response(url, json) -> Mock:
             response = Mock()
-            # Return different embeddings based on prompt
-            if "hello" in json["prompt"]:
-                response.json.return_value = {"embedding": [0.1, 0.2, 0.3]}
+            # Return different embeddings based on input
+            if "hello" in json["input"]:
+                response.json.return_value = {"embeddings": [[0.1, 0.2, 0.3]]}
             else:
-                response.json.return_value = {"embedding": [0.4, 0.5, 0.6]}
+                response.json.return_value = {"embeddings": [[0.4, 0.5, 0.6]]}
             response.raise_for_status.return_value = None
             return response
         

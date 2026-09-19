@@ -54,6 +54,7 @@
 | D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 已拍板待实现 | 本文件 B 节 |
 | D-038 | 2026-09-18 | OCR 探测路由：docling 默认全量 OCR 改为按文件探测文本层（auto/always/never 三态），数字 PDF 关 OCR 提速、扫描件不静默空索引 | 已实现 | 本文件 B 节 |
 | D-039 | 2026-09-19 | 公式富化弃 docling 内置 VLM 路线改自研补全：layout 免费框出的空 FORMULA 条目 bbox 渲图→复用 vision_llm（qwen2.5vl-3b GPU）转 LaTeX；实测内置路线本机不可行（模型不可得/165s 每页） | 已实现 | 本文件 B 节 |
+| D-040 | 2026-09-19 | ollama embedding 换 /api/embed 截断端点（legacy /api/embeddings 超模型 ctx 裸 500）：HybridChunker 大块 + caption 缝入 8.7k 字符超 nomic 2048 token 上限首次引爆；cosine 空间下两端点向量等价 | 已实现 | 本文件 C 节 |
 
 ---
 
@@ -271,6 +272,13 @@
 - **代价 / 现状**：PR #7。`metadata_enricher.use_llm` 保持 `false`（tags/summary 不参与召回，本地 8B 逐 chunk 生成纯浪费 ingest 时间）。rerank 保持 `enabled: false`（场景是召回+溯源非精排喂生成，< 50 篇小库噪音不明显）。三者共同构成"本场景比通用 RAG 更轻"的减负。
 - **关联**：[chunk_refiner.py](src/ingestion/transform/chunk_refiner.py)；[settings.yaml](config/settings.yaml)；[spec](docs/superpowers/specs/2026-08-13-local-english-literature-rag-design.md) §3.3.1。与 [[D-005]]（graceful degradation 规则）一致——规则层是确定性兜底。
 
+### D-040 ollama embedding 换 /api/embed 截断端点：legacy 端点超模型 ctx 裸 500，HybridChunker 大块 + caption 缝入首次引爆
+- **碰到**：摄入端改造验收重灌（2026-09-19）首跑，New-record 一篇 39 块只编出 29 个向量，upsert 数量校验（39≠29）整篇拦下；trace 里 `batch_2_error` = Ollama 500，`BatchProcessor` 吞批只记 trace 不上抛。逐块二分复现：`chunk[21]`（表格块 1621 字符）缝入两张 VLM caption（839 + 6192 字符）后 8684 字符 ≈ 2200 token，超 `nomic-bert.context_length=2048` 硬上限，legacy `/api/embeddings` 直接 500 不截断；最大可嵌前缀 4887 字符（该块 2.39 字符/token——表格+LaTeX 符号密）。两个反直觉陷阱：① 18k 字符**填充文本**能过（BPE 对重复 n-gram 压缩率极高），纯长度冒烟测试漏判；② 旧递归切分 1000 字符/块天然不过线，HybridChunker 大块（~2.4k）+ caption 缝入才过线——新切分放大的是**既有**隐患，不是新 bug。
+- **行业做法**：ollama 官方 `/api/embed` 端点 `truncate` 默认 true（服务端截到 num_ctx）；legacy `/api/embeddings` 无截断语义。embedding 侧长文本常规做法是客户端截断或分块，但字符↔token 比率随内容漂移（本例 2.39 vs 常规英文 ~4.0），客户端按字符截断没有安全通用上界。
+- **我的解法**：`OllamaEmbedding` 换 `/api/embed`（payload `input`，响应 `embeddings[0]`，单条循环保持），超长由服务端截断。换端点安全性实测背书：同文本两端点向量 cosine = 1.0、仅幅度不同，而 chroma collection 是 `hnsw:space=cosine`（尺度不变）——检索排序零影响。TDD 先红后绿（`test_ollama_embedding.py` 换端点断言 + 超长用例）+ 生产路径真机冒烟（原文 500 的块 OK）。upsert 数量校验作为最后防线在本次立功（库未被污染成 29/39），`BatchProcessor` 批失败静默吞行为记录在案不改（最小修复）。**环境依赖**：`/api/embed` 要求 ollama ≥ 0.2.6（旧版 404）——升级/换机时留意。
+- **为什么不用别的**：① 客户端字符截断——符号密集文本 2.39 字符/token，按最保守比率设上界会把普通文本过度截断丢语义；② 调 `num_ctx`——nomic-bert 架构 2048 是位置编码硬上限（`/api/show` 实证），不是 ollama 运行参数；③ 限制 caption 长度（治 6192 字符话痨 caption 的源头）——动 `ImageCaptioner` 行为，违背工单 04「零改动」承诺；④ 调小切分预算——治标且切分口径刚定型（D-037）。
+- **关联**：[ollama_embedding.py](src/libs/embedding/ollama_embedding.py)；[[D-014]]（同文件 trust_env=False 先例）；[[D-037]]（HybridChunker 大块是放大器）；T12（`.wayfinder/tickets/T12`，vision 常驻 500 假说——本例已单测隔离证伪关联，vision 调用后 30 连发 embed 全过）；机制复现脚本在 `.scratch/ingestion-revamp/probe_embed_500.py`（gitignored）。
+
 ---
 
 ## D. 待决与已知债
@@ -386,3 +394,4 @@
 - **为什么不用别的**：① 压输入硬凑 8192——实证溢出与输入长度无单调关系，且压答案动的是被测产物（faithfulness 的对象）；② 换判官/调温度——换刻度，纪律①禁止；③ 关了思考就算完——思考开还影响计费与 wall time，usage 记账才能发现；④ 靠重跑硬抗——run1 的 13/23 作废即反例。
 - **代价 / 现状**：16384 抬高单次调用成本上限（实测未再溢出）；批间 30s 使全量评测多 ~3min；思考关后判官输出无 reasoning，历史口径对照需注意 T20 首批读数产自思考开。现状：定版参数随 oldexam-optimization.md 全程冻结使用。
 - **关联**：[T20](../.wayfinder/tickets/T20-generation-and-4metrics.md) / [T21](../.wayfinder/tickets/T21-testset-v50-synthesis.md) / [T22](../.wayfinder/tickets/T22-new-baseline-and-noise-floor.md) Resolution；[oldexam-optimization.md](../.wayfinder/oldexam-optimization.md)（参数唯一记录源）。
+- **追记（2026-09-19，思考第三课收官 + 基类级根治）**：摄入期也踩了思考坑——表格摘要器（`max_tokens=120` 紧预算）content 全空 8/8（思考 token 吃光预算，`content` 空串 → 摘要 None → failures 静默累计，D-005 降级掩盖了异常）。判官/合成器是**调用点各自**显式关思考，摄入端 LLM 调用点漏网——说明按调用点设防不可持续。根治：`DeepSeekLLM.chat` 默认注入 `extra_body={"thinking": {"type": "disabled"}}`（显式传 `extra_body` 可覆盖），`OpenAILLM` 学习透传 `extra_body` 进 REST payload（非 deepseek 端点不注入——未知参数会被拒）。同事件链另一独立根因：`scripts/ingest.py` 不 `load_dotenv`（`evaluate.py` 有）→ 摘要器初始化拿不到 `DEEPSEEK_API_KEY` 静默裸奔——配置缺失被 D-005 降级规则吞成「无摘要形态」，CLI 已对齐补 `load_dotenv`。教训：**降级规则会掩盖配置错误**，「失败原因」要能从日志看出是云端故障还是本机配置。

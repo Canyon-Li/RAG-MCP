@@ -116,16 +116,25 @@ class OllamaEmbedding(BaseEmbedding):
                 "Install with: pip install httpx"
             ) from e
         
-        # Prepare API request
-        url = f"{self.base_url}/api/embeddings"
-        
+        # Prepare API request — /api/embed, NOT the legacy /api/embeddings.
+        # The legacy endpoint rejects prompts longer than the model's
+        # context window with a bare 500 (no truncation), which on
+        # 2026-09-19 silently dropped a whole encode batch: a HybridChunker
+        # table chunk stitched with two VLM captions hit 8.7k chars ≈ 2.2k
+        # tokens against nomic-embed-text's 2048-token ceiling. /api/embed
+        # truncates to num_ctx server-side instead. Vector direction is
+        # identical between the endpoints (scale differs; the vector store
+        # uses cosine space, which is scale-invariant).
+        url = f"{self.base_url}/api/embed"
+
         embeddings: List[List[float]] = []
-        
-        # Process each text individually (Ollama API expects single prompt)
+
+        # Process each text individually (one input per request keeps the
+        # response-order contract trivially exact)
         for text in texts:
             payload = {
                 "model": self.model,
-                "prompt": text,
+                "input": text,
             }
             
             try:
@@ -139,15 +148,15 @@ class OllamaEmbedding(BaseEmbedding):
                     response.raise_for_status()
                     
                     result = response.json()
-                    
+
                     # Extract embedding from response
-                    if "embedding" not in result:
+                    if "embeddings" not in result or not result["embeddings"]:
                         raise OllamaEmbeddingError(
                             f"Unexpected response format from Ollama API. "
-                            f"Expected 'embedding' field but got: {list(result.keys())}"
+                            f"Expected 'embeddings' field but got: {list(result.keys())}"
                         )
-                    
-                    embeddings.append(result["embedding"])
+
+                    embeddings.append(result["embeddings"][0])
                     
             except httpx.HTTPStatusError as e:
                 # HTTP error (4xx, 5xx)
