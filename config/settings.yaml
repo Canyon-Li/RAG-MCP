@@ -111,7 +111,7 @@ ingestion:
     page_batch_size: 0  # T23: 单次完整转换——分批转换（每批新 converter）同机间歇丢段；单批确定且完整（新机器内存足够；分批本是 16GB RAM workaround）
     ocr_mode: "auto"  # 工单03 OCR 探测路由：auto=按文件探测文本层（数字 PDF 不开 OCR 提速；无文本层仅对该文件自动开，不静默空索引）；always=强制开（docling 旧默认）；never=强制关
     formula_enrichment: true  # 工单06/D-039 公式富化：layout 框出的空 FORMULA 条目渲图→Vision LLM（复用 vision_llm 块，本机 qwen2.5vl-3b GPU ≈3.6s/条）转 LaTeX 填回；在解析缓存落盘前执行，重放零成本复用；失败退空条目不阻塞（D-005）。缺省关=旧行为（公式条目丢弃）
-    parse_cache:  # D-036 解析缓存：--force 重灌从无损 JSON 重放（键=文件 SHA256），不再重付 docling 解析；版本戳不符自动重解析
+    parse_cache:  # D-036 解析缓存：--force 重新入库从无损 JSON 重放（键=文件 SHA256），不再重付 docling 解析；版本戳不符自动重解析
       enabled: true  # 缺省 true；整个 parse_cache 块缺席 = 缓存关闭（pre-D-036 行为，块内不写 enabled 也是开）
       dir: "data/parsed"  # gitignored；条目布局 {dir}/{sha256}/manifest.json + batch_NNN.json
 
@@ -134,7 +134,7 @@ ingestion:
 
   # Table-chunk summarizer (工单05): section_type=table 的块获得 LLM 转述（≤120 token）
   # 拼在块文本前部——语义型表格查询走摘要，不依赖数字行的向量。按内容哈希持久缓存
-  # （data/db/table_summary_cache.db），同一表格重灌不重复调用；调用失败该块退回无摘要
+  # （data/db/table_summary_cache.db），重新入库时同一表格不重复调用；调用失败该块退回无摘要
   # 形态，不阻塞摄入（D-005）。独立 provider/model（D-024 追记：摄入期允许云端），
   # 可整块切回本地（如 provider "ollama" / model "granite4.1:8b" / base_url "http://localhost:11434"）。
   # 块缺席 = 关（pre-工单05 行为）。

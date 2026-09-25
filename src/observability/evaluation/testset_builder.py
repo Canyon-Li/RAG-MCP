@@ -376,7 +376,7 @@ def render_review_md(
     removed questions with reasons at the end.
     """
     lines: list[str] = []
-    lines.append("# T21 考卷 v5.0 终审材料")
+    lines.append("# T21 测试集 v5.0 终审材料")
     lines.append("")
     lines.append(
         f"合成 {summary.get('synthesised', '?')} / "

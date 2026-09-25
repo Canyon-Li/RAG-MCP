@@ -123,6 +123,7 @@ Image extraction method is **parser-specific** (capability boundary — see DEV_
 - **Tests insert repo root onto `sys.path`** (`conftest.py` and each script), so `from src.…` imports work without installing the package. Integration/e2e tests shell out to `python -m src.mcp_server.server` as a subprocess.
 - **Adding a new document format:** subclass `BaseParser` + `ParserFactory.register_provider()`; the rest of the pipeline is format-agnostic. Details & registered parsers in [.claude/rules/extending-backends.md](.claude/rules/extending-backends.md).
 - **Prompts** live as plain text in `config/prompts/` (`image_captioning.txt`, `chunk_refinement.txt`, `metadata_enrichment.txt`, `rerank.txt`, `table_summary.txt`, `formula_transcription.txt`) — edit there, not in code.
+- **Eval vocabulary: use the new terms.** Frozen archives (git history, `.wayfinder/`, older DEV_CHANGELOG entries) still use old Chinese codewords (判官/噪声底/考卷/杠杆/重灌…); translate via the glossary in [CONTEXT.md](CONTEXT.md) when reading. New commits, docs, comments, and UI strings must use the canonical new terms — never copy an old codeword from history into new output.
 - **Design decisions & pitfalls live in [DEV_CHANGELOG.md](DEV_CHANGELOG.md)** — check it before changing providers / parsers / runtime env to avoid repeating past traps (e.g. local-service httpx needs `trust_env=False`; use conda, not `.venv`; completion models can't be wrapped in a chat template).
 
 ## Skills (agent-driven workflow)
