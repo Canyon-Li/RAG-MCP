@@ -203,7 +203,7 @@ k=5 vs k=10 会让 `context_relevance`/`context_precision` 数值略有变化(�
 
 **已修复**(D-027):DoclingParser 现按 8 页/批分批转换,**每批新建 converter** 重置内存累积;后批失败保留前批内容。长文档不再需要"一篇一进程"绕行。
 
-**仍要留意**:若日志再现 `std::bad_alloc`(极端内存压力下批内也可能失败),判别法仍是 `Text length ÷ 页数 < 1000`;此时重灌单文件即可(幂等,BM25 按 doc_id 先删后加):
+**仍要留意**:若日志再现 `std::bad_alloc`(极端内存压力下批内也可能失败),判别法仍是 `Text length ÷ 页数 < 1000`;此时重新入库单文件即可(幂等,BM25 按 doc_id 先删后加):
 ```powershell
 python scripts/ingest.py --path "tests/fixtures/eval_docs/<受影响文件>.pdf" --collection evaluation --force
 ```

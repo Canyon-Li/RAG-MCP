@@ -50,11 +50,11 @@
 | D-033 | 2026-08-29 | cross-encoder 重模型上 MCP stdio 的三层坑：包级 preload 不够（transformers 懒 import）、阻塞预热炸 initialize 握手、e2e 管道无人排空即冻结——主线程裸 import + 后台 warm 线程 + 语义键缓存 | 采纳 | feat/cross-encoder-rerank |
 | D-034 | 2026-08-29 | references 段 query 侧过滤：entry-density 检测 + 融合全池**剔出**（非降位——cross-encoder 重打分会洗掉降位）+ 回填要求融合不预截断 | 采纳 | feat/reference-section-filter |
 | D-035 | 2026-09-13 | docling 分批转换（16GB RAM workaround）同机间歇丢段 → `page_batch_size` 配置化并默认 0（单次完整转换，新机器内存足够且确定性可复现） | 采纳 | feat/t23-corpus-integrity |
-| D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 已实现（09-18 追记） | 本文件 B 节 |
-| D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 已拍板待实现 | 本文件 B 节 |
-| D-038 | 2026-09-18 | OCR 探测路由：docling 默认全量 OCR 改为按文件探测文本层（auto/always/never 三态），数字 PDF 关 OCR 提速、扫描件不静默空索引 | 已实现 | 本文件 B 节 |
-| D-039 | 2026-09-19 | 公式富化弃 docling 内置 VLM 路线改自研补全：layout 免费框出的空 FORMULA 条目 bbox 渲图→复用 vision_llm（qwen2.5vl-3b GPU）转 LaTeX；实测内置路线本机不可行（模型不可得/165s 每页） | 已实现 | 本文件 B 节 |
-| D-040 | 2026-09-19 | ollama embedding 换 /api/embed 截断端点（legacy /api/embeddings 超模型 ctx 裸 500）：HybridChunker 大块 + caption 缝入 8.7k 字符超 nomic 2048 token 上限首次引爆；cosine 空间下两端点向量等价 | 已实现 | 本文件 C 节 |
+| D-036 | 2026-09-17 | 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳，重放替代重解析（分块/映射实验不再重付解析成本） | 采纳 | 本文件 B 节 |
+| D-037 | 2026-09-18 | 切分器切换 docling HybridChunker；自研 section-aware 方案（含 1000 token 预算制全文）转后备蓝图 | 采纳 | 本文件 B 节 |
+| D-038 | 2026-09-18 | OCR 探测路由：docling 默认全量 OCR 改为按文件探测文本层（auto/always/never 三态），数字 PDF 关 OCR 提速、扫描件不静默空索引 | 采纳 | 本文件 B 节 |
+| D-039 | 2026-09-19 | 公式富化弃 docling 内置 VLM 路线改自研补全：layout 免费框出的空 FORMULA 条目 bbox 渲图→复用 vision_llm（qwen2.5vl-3b GPU）转 LaTeX；实测内置路线本机不可行（模型不可得/165s 每页） | 采纳 | 本文件 B 节 |
+| D-040 | 2026-09-19 | ollama embedding 换 /api/embed 截断端点（legacy /api/embeddings 超模型 ctx 裸 500）：HybridChunker 大块 + caption 缝入 8.7k 字符超 nomic 2048 token 上限首次引爆；cosine 空间下两端点向量等价 | 采纳 | 本文件 C 节 |
 | D-041 | 2026-09-14 | LLM 判官工程参数三课：调用量换代→节流重校（批间 30s）、拆解膨胀→max_tokens 16384、思考默认开→显式关（原编号 D-036 撞号勘误，2026-09-19 重编） | 采纳 | 本文件尾部 |
 
 ---
@@ -178,7 +178,7 @@
 
 ### D-036 解析产物落盘为唯一真源：docling 无损 JSON + 解析器版本戳
 
-- **状态**：已实现（2026-09-18，工单 02；实现细节见下方追记）。
+- **状态**：采纳（2026-09-18 实现，工单 02；实现细节见下方追记）。
 - **背景**：解析是本机摄入链路最贵的一步（docling CPU 解析为重灌瓶颈），而当前换任何下游参数（分块策略、embedding、映射改动）都必须 `--force` 重付整轮解析。依据 `docs/docling-论文RAG-深度研究报告.html` 3.3 决策一：无损 JSON 是唯一真源，后续实验从 JSON 重放。
 - **备选**：① 不落盘（现状）；② 存项目 `sections` 快照（简单，但把解析映射冻结——将来加 FORMULA 映射、传 heading level、改图片过滤阈值，旧缓存全部失效仍要重解析，违背缓存目的）；③ **docling 原生无损 JSON + 解析器版本戳**。
 - **决策**：选 ③。parse 后 `save_as_json()` 落 `data/parsed/`（gitignored，键=文件 SHA256）；重放 = 从 JSON 重建 item 流再走 `_item_to_section`；JSON 记录生成它的解析器版本，版本不符自动重解析。文件级 SHA256 跳过（[[D-006]]）不动——重放只在 `--force` 重灌时生效。
@@ -197,7 +197,7 @@
 
 ### D-037 切分器切换 docling HybridChunker（自研方案转后备蓝图）
 
-- **状态**：已拍板待实现（2026-09-18 设计对齐）。
+- **状态**：采纳（2026-09-18 设计对齐；随摄入端改造 2026-09-19 落地）。
 - **背景**：表格/切分设计对齐过程中发现，自研 section-aware chunker 在逐项重造 docling HybridChunker 的既有能力——K2 结构切分 ≈ HierarchicalChunker 基座、章节回填 ≈ contextualize、表头重复 ≈ repeat_table_header（默认开）、尾片并回 ≈ merge_peers（默认开）、token 制预算 ≈ max_tokens 从 tokenizer 推导。且自研已付三个隐藏缺陷的维护成本（见 [[D-036]] 关联排查）：胖 GFM 按填充长度装箱致碎片化、切分后清洗致 split 哈希与 vector 哈希断裂、尾箱过小成检索噪声。触发本决策的分析：`docs/docling-论文RAG-深度研究报告.html` §2.4。
 - **决策**：docling 路径（含 D-036 重放路径）的切分改用 `docling.chunking.HybridChunker`，tokenizer **显式传 nomic-embed-text 的**（不传默认 MiniLM，块长与 embedding 窗口错配——报告坑 5 原文警告），max_tokens=1000，merge_peers 开；非 docling / 降级路径（pdf_text 降级、docx 等）保留现有 `DocumentChunker` 作兜底，配置开关可切回；行片摘要（deepseek-flash，≤120 token）仍为自研 post-chunk transform。
 - **后备蓝图（HybridChunker 效果不达预期时恢复自研的完整规格）**：

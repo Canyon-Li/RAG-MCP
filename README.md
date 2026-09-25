@@ -84,11 +84,11 @@ llm:
   model: "granite4.1:8b"
   base_url: "http://localhost:11434/v1"   # /v1 供 vision/embedding 的 OpenAI 兼容端点；文本 LLM 自动剥 /v1 用原生 /api/chat
 embedding:
-  provider: "ollama"           # 本地 nomic-embed-text；httpx 需 trust_env=False 绕系统代理（D-014）
+  provider: "ollama"           # 本地 nomic-embed-text；httpx 需 trust_env=False 绕系统代理
   model: "nomic-embed-text"
   dimensions: 768
 vision_llm:
-  provider: "ollama"           # 含图 PDF 的图片描述（D-020）
+  provider: "ollama"           # 含图 PDF 的图片描述
   model: "llava-phi3:3.8b"
 vector_store:
   provider: "chroma"
@@ -97,7 +97,7 @@ ingestion:
   parser:
     provider: "docling"        # 矢量图 bbox 渲染；降级链 docling→pdf_text
   chunk_refiner:
-    use_llm: false             # 策略 C：溯源优先，关掉 LLM 精炼层（D-026）
+    use_llm: false             # 策略 C：溯源优先，关掉 LLM 精炼层
 ```
 
 ### 3. 摄取、查询、启动服务
@@ -380,7 +380,7 @@ ruff check . && mypy src     # lint + 类型检查
 
 ## 相关文档
 
-- [DEV_CHANGELOG.md](DEV_CHANGELOG.md) — 本项目设计决策的真相源：每条决策记录背景/备选/理由/代价（D-001 ~ D-026）。「为什么这么定」请查阅此文档（纯本地切换见 D-024、英文分词改造见 D-025、chunk_refiner 关闭 LLM 见 D-026）
+- [DEV_CHANGELOG.md](DEV_CHANGELOG.md) — 本项目设计决策的真相源：每条决策记录背景/备选/理由/代价。「为什么这么定」请查阅此文档
 - [CLAUDE.md](CLAUDE.md) — AI Agent 协作指引（架构约定、命令、注意事项）
 
 ---

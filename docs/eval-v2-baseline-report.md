@@ -51,7 +51,7 @@
 - **7 条 recall = 0.00**:集中在**方法/概念解释类问题**("W-type/T-type 是什么"、"straight-line method 是什么"、"F2^4 inversion 怎么做")——概念答案只占论文一小段,1000 字符粗 chunk 稀释了 embedding,检索排名暴跌;
 - **问具体数字的条目明显更好**(qubits 数、T-depth 等,recall 普遍 0.75-1.0);
 - **#4 是唯一 source_recall=0**:Lin/Xiang 论文整篇漏检(跨源条目其中一篇);
-- **高分段(#17-22,recall=1.0)证明 judge 无系统性偏差**:分数差异来自真实检索难度,不是裁判漂移;
+- **高分段(#17-22,recall=1.0)证明 judge 无系统性偏差**:分数差异来自真实检索难度,不是评分模型漂移;
 - 1 条(#23)语义指标缺值(judge 单条调用失败被记 {}),属已知 LLM judge 方差。
 
 ## 5. 诊断 → B 阶段调参优先级
@@ -60,13 +60,13 @@
 
 | 优先级 | 改动 | 针对症状 | 机制 | 代价/风险 |
 |---|---|---|---|---|
-| 🔴 1 | `rerank.enabled → true`(先 `llm` provider) | 双 precision(0.66/0.71) | 从 fusion 候选池精选排序,rerank 本职 | granite 当重排裁判,评估变慢;cross_encoder 未充分测试,暂不用 |
+| 🔴 1 | `rerank.enabled → true`(先 `llm` provider) | 双 precision(0.66/0.71) | 从 fusion 候选池精选排序,rerank 本职 | granite 当重排模型,评估变慢;cross_encoder 未充分测试,暂不用 |
 | 🔴 2 | `fusion_top_k: 10 → 15~20` | context_recall(一半) | 慢热 chunk 排 11-20 名时永无出头 | 精度可能再降,**必须与 rerank 搭配**(扩池+精排组合拳) |
 | 🟡 3 | `dense/sparse_top_k: 20 → 25~30` | context_recall(另一半)+ #4 整篇漏检 | 单路 20 名外的好 chunk 进不了 RRF | 轻微耗时;RRF 自会过滤 |
 | 🟡 4 | `rrf_k: 60 → 40` | context_precision | 60 偏"民主"压平名次信号;40 更信头部 | 单路冠军可能压制另一路,前 3 轮后再试 |
 | 🟢 5 | `chunk_size: 1000 → 600~800`(overlap 同步 200→100~120) | **7 条概念题 recall=0** | 小 chunk = 聚焦向量,概念段落不再被稀释 | **全量重新 ingest**(40min/轮),chunk_id 全变;留作概念题缺口的最后一招 |
 
-**实验纪律**(B 阶段执行模板):一次只改一个参数 → 跑同一 23 条基线(分批脚本)→ 五指标 before/after;context_recall 做主指标(优化目标),source_recall 做归因指标(解释变化)。
+**实验规则**(B 阶段执行模板):一次只改一个参数 → 跑同一 23 条基线(分批脚本)→ 五指标 before/after;context_recall 做主指标(优化目标),source_recall 做归因指标(解释变化)。
 
 ## 6. 过程踩坑(运行环境,非代码缺陷)
 

@@ -96,7 +96,7 @@ chunk 级召回的传统做法是标注"正确 chunk 的 id 清单",本项目的
 ## 4. 代价与边界(诚实声明)
 
 1. **评估耗时增加**:每条 QA 多一轮 judge 判定(与 reference 论断数成正比)。缓解:metrics 列表是开关,不加不算;与 v1 的加速成果(top-k 5 + 模型切换脚本)叠加后总耗时可控。
-2. **LLM 裁判方差**:context_recall 与 context_relevance/precision 同性质,跑两遍分数会漂;确定性 source 指标不受影响。对比实验需同配置跑 2-3 次取均值(既有纪律)。
+2. **LLM 评分方差**:context_recall 与 context_relevance/precision 同性质,跑两遍分数会漂;确定性 source 指标不受影响。对比实验需同配置跑 2-3 次取均值(既有规则)。
 3. **judge 质量是天花板**:llama3 判长论文上下文偶有误判;若 recall 分数长期异常,先怀疑 judge(RAGAS_JUDGE_MODEL 可热切验证)再怀疑检索。
 4. **语义 recall ≠ 精确 recall**:它判"reference 的论断有无支撑",不是"标注 chunk 有无命中"。论断粒度由 judge 拆分决定,与人工期望可能有小偏差——这是用稳定性换精确度的已知取舍。
 
